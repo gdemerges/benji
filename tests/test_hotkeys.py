@@ -6,16 +6,21 @@ pour ne jamais lever — un raccourci absent est une gêne, une app qui ne déma
 pas est une panne.
 """
 
+import threading
+
 import benji.hotkeys as hotkeys_mod
+import benji.hotkeys.linux as linux_mod
+import benji.hotkeys.macos as macos_mod
+import benji.hotkeys.windows as windows_mod
 from benji.hotkeys import (
     GlobalHotkeys,
-    LinuxHotkeys,
-    WindowsHotkeys,
     build_hotkeys,
     parse_shortcut,
     parse_shortcut_windows,
     parse_shortcut_x11,
 )
+from benji.hotkeys.linux import LinuxHotkeys
+from benji.hotkeys.windows import WindowsHotkeys
 
 CMD, SHIFT, ALT, CTRL = 0x0100, 0x0200, 0x0800, 0x1000
 
@@ -48,12 +53,14 @@ def test_combinaisons_illisibles():
     assert parse_shortcut("Ctrl+Shift") is None  # que des modificateurs
 
 
-def test_un_raccourci_illisible_ne_leve_pas():
+def test_un_raccourci_illisible_ne_leve_pas(monkeypatch):
     """Le démarrage de l'app ne doit jamais dépendre d'un raccourci."""
+    monkeypatch.setattr(macos_mod, "IS_MACOS", True)
     assert GlobalHotkeys().register("Ctrl+Nope", lambda: None) is False
 
 
 def test_carbon_indisponible_degrade_en_silence(monkeypatch):
+    monkeypatch.setattr(macos_mod, "IS_MACOS", True)
     hotkeys = GlobalHotkeys()
     monkeypatch.setattr(hotkeys, "_load", lambda: None)
 
@@ -78,22 +85,25 @@ def test_windows_meme_tokenizer_que_carbon():
     assert parse_shortcut_windows("Ctrl+A+B") is None
 
 
-def test_windows_hotkeys_hors_windows_ne_fait_rien():
+def test_windows_hotkeys_hors_windows_ne_fait_rien(monkeypatch):
+    monkeypatch.setattr(windows_mod, "IS_WINDOWS", False)
     assert WindowsHotkeys().register("Ctrl+Alt+Cmd+B", lambda: None) is False
 
 
 def test_windows_combinaison_illisible_ne_leve_pas(monkeypatch):
-    monkeypatch.setattr(hotkeys_mod, "IS_WINDOWS", True)
+    monkeypatch.setattr(windows_mod, "IS_WINDOWS", True)
 
     assert WindowsHotkeys().register("Ctrl+Nope", lambda: None) is False
 
 
 def test_windows_user32_indisponible_degrade_en_silence(monkeypatch):
-    """Sur ce poste (macOS), `ctypes.windll` n'existe pas : exactement le cas
-    que ce garde-fou doit couvrir sur une vraie machine Windows sans DLL."""
-    monkeypatch.setattr(hotkeys_mod, "IS_WINDOWS", True)
+    """`_load` neutralisé plutôt que compter sur l'absence de `ctypes.windll` :
+    sur le runner Windows de la CI, la DLL existe et le raccourci serait
+    réellement réservé."""
+    monkeypatch.setattr(windows_mod, "IS_WINDOWS", True)
 
     hotkeys = WindowsHotkeys()
+    monkeypatch.setattr(hotkeys, "_load", lambda: None)
     assert hotkeys.register("Ctrl+Alt+Cmd+B", lambda: None) is False
     hotkeys.unregister_all()  # ne doit pas lever non plus
 
@@ -118,12 +128,13 @@ def test_x11_meme_tokenizer_que_carbon():
     assert parse_shortcut_x11("Ctrl+A+B") is None
 
 
-def test_linux_hotkeys_hors_linux_ne_fait_rien():
+def test_linux_hotkeys_hors_linux_ne_fait_rien(monkeypatch):
+    monkeypatch.setattr(linux_mod, "IS_LINUX", False)
     assert LinuxHotkeys().register("Ctrl+Alt+Cmd+B", lambda: None) is False
 
 
 def test_linux_combinaison_illisible_ne_leve_pas(monkeypatch):
-    monkeypatch.setattr(hotkeys_mod, "IS_LINUX", True)
+    monkeypatch.setattr(linux_mod, "IS_LINUX", True)
 
     assert LinuxHotkeys().register("Ctrl+Nope", lambda: None) is False
 
@@ -131,13 +142,28 @@ def test_linux_combinaison_illisible_ne_leve_pas(monkeypatch):
 def test_x11_indisponible_degrade_en_silence(monkeypatch):
     """Couvre aussi bien Xlib absente qu'une session Wayland pure (`_load`
     rend None dans les deux cas, cf. sa docstring)."""
-    monkeypatch.setattr(hotkeys_mod, "IS_LINUX", True)
+    monkeypatch.setattr(linux_mod, "IS_LINUX", True)
 
     hotkeys = LinuxHotkeys()
     monkeypatch.setattr(hotkeys, "_load", lambda: None)
 
     assert hotkeys.register("Ctrl+Alt+Cmd+B", lambda: None) is False
     hotkeys.unregister_all()  # ne doit pas lever non plus
+
+
+def test_linux_rend_l_action_au_thread_qt(qtbot):
+    """Le fil X11 ne doit jamais exécuter l'action lui-même : elle touche le
+    tray, et un appel Qt hors du thread principal finit en plantage."""
+    hotkeys = LinuxHotkeys()
+    fils = []
+    hotkeys._callbacks[(56, 4)] = lambda: fils.append(threading.current_thread())
+
+    fil_x11 = threading.Thread(target=hotkeys._dispatch, args=(56, 4))
+    fil_x11.start()
+    fil_x11.join()
+
+    qtbot.waitUntil(lambda: fils != [], timeout=500)
+    assert fils == [threading.main_thread()]
 
 
 # --- sélection par OS ---

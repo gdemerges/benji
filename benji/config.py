@@ -200,7 +200,7 @@ class UIConfig:
     # et rendre le micro : en réunion, le focus est sur Teams ou Zoom, donc les
     # QShortcut posés sur l'overlay ne répondent pas. Combinaison à quatre
     # modificateurs pour ne rien prendre à personne. "" = désactivé.
-    # cf. benji/hotkeys.py.
+    # cf. benji/hotkeys/.
     global_hotkey_pause: str = "Ctrl+Alt+Cmd+B"
     # Marquer un moment (« là, c'est important ») sans quitter la visio : c'est
     # le geste qu'on fait vraiment en réunion, et il n'a de valeur que s'il est

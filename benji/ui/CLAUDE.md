@@ -56,7 +56,7 @@ Une feuille de style posée sur une `QMainWindow` ou sur un `QWidget` **dérivé
   - `waveform.py` — **élément signature historique** : 5 barres animées quand la voix est détectée. Timer actif seulement pendant l'animation.
   - `status_pill.py`, `segmented_control.py` (onglets **soulignés**, pas de pilule grise), `summary_item.py`, `pending_item.py`, `icons.py`.
 
-Raccourcis (attachés à l'overlay, donc **seulement quand Benji a le focus**) : Ctrl+Shift+H (réunions), Ctrl+Shift+S (résumé), Ctrl+Shift+D (debug macOS). La pause micro a en plus un raccourci **global** (`benji/hotkeys.py`, ⌃⌥⌘B) : en visio plein écran le focus est ailleurs, c'est-à-dire exactement quand on en a besoin. Il notifie par le tray — un geste hors de la vue doit se voir confirmé, croire le micro coupé alors qu'il ne l'est pas est le pire des états.
+Raccourcis (attachés à l'overlay, donc **seulement quand Benji a le focus**) : Ctrl+Shift+H (réunions), Ctrl+Shift+S (résumé), Ctrl+Shift+D (debug macOS). La pause micro a en plus un raccourci **global** (`benji/hotkeys/`, ⌃⌥⌘B) : en visio plein écran le focus est ailleurs, c'est-à-dire exactement quand on en a besoin. Il notifie par le tray — un geste hors de la vue doit se voir confirmé, croire le micro coupé alors qu'il ne l'est pas est le pire des états.
 
 Le style se recharge au changement de thème système (`colorSchemeChanged`). Chaque widget custom expose `apply_theme()`, propagé par `MainWindow._apply_theme`.
 
