@@ -34,9 +34,13 @@ def vibrancy_enabled() -> bool:
 #    qu'une chose : « on est en train de prendre au mot, maintenant ». Il n'est
 #    donc jamais utilisé pour une action — un bouton principal rouge se lirait
 #    comme un danger sur macOS. L'action principale est un aplat d'encre.
-# 2. **Le papier est de la pierre.** Un gris neutre à peine chaud : ni le
-#    gris-bleu des Réglages Système (que Benji refuse d'imiter), ni un crème
-#    de papeterie. Le document posé dessus, lui, est blanc.
+# 2. **Le papier est de la pierre chaude.** Un grège : ni le gris-bleu des
+#    Réglages Système (que Benji refuse d'imiter), ni un crème de papeterie.
+#    Le gris neutre d'avant (#EDECE9) se lisait froid, clinique — un outil, pas
+#    un lieu où l'on relit une conversation. La chaleur vient de l'encre autant
+#    que du fond : un noir tiré vers le brun, dont toutes les nuances dérivées
+#    (texte secondaire, filets, sélection) héritent. La feuille reste presque
+#    blanche : un blanc pur à côté d'un fond chaud paraît bleuté.
 #
 # Les couleurs ne sont plus dérivées de la couleur d'accentuation du système :
 # c'est précisément ce qui faisait ressembler Benji à une boîte de dialogue.
@@ -45,15 +49,16 @@ def vibrancy_enabled() -> bool:
 # `sheet` la feuille de lecture posée dessus. C'est le relief, pas la teinte, qui
 # fait qu'une surface de lecture paraît récente.
 _LIGHT = {
-    "paper": QColor("#EDECE9"),
-    "sheet": QColor("#FFFFFF"),
-    "ink": QColor("#1D1C1A"),
+    "paper": QColor("#EEE9E1"),
+    "sheet": QColor("#FFFDF9"),
+    "ink": QColor("#2B241D"),
     "record": QColor("#E5484D"),
 }
+# En sombre, un brun très profond plutôt qu'un noir de terminal.
 _DARK = {
-    "paper": QColor("#0F0F10"),
-    "sheet": QColor("#1A1A1C"),
-    "ink": QColor("#ECEAE6"),
+    "paper": QColor("#15120F"),
+    "sheet": QColor("#201C18"),
+    "ink": QColor("#EEE6DA"),
     "record": QColor("#FF5C61"),
 }
 
@@ -377,7 +382,7 @@ def primary_button_qss(theme: Theme) -> str:
     Volontairement pas rouge — le rouge ne dit qu'une chose dans Benji, « on
     enregistre ». Un bouton rouge sur macOS se lit comme un danger.
     """
-    fg = theme.paper if theme.is_dark else QColor("#FFFFFF")
+    fg = theme.paper if theme.is_dark else theme.sheet
     # Opaque en sombre : sur la feuille (#191C21) un aplat translucide se délave
     # et le bouton principal perd son autorité.
     fill = theme.ink if theme.is_dark else theme.ink_alpha(92)

@@ -11,13 +11,24 @@ reposées sur les `QTextBlockFormat` après rendu (cf. `render_markdown`).
 
 from __future__ import annotations
 
-from PySide6.QtGui import QTextCursor
+import re
+
+from PySide6.QtGui import QFont, QPalette, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QTextBrowser
 
 from benji.ui.style import FONT_DISPLAY, FONT_MONO, FONT_READING, FONT_UI, Theme, reading_font
 
 # Marges (haut, bas) en px par niveau de titre.
-_HEADING_MARGINS = {1: (2, 12), 2: (22, 8), 3: (16, 6)}
+_HEADING_MARGINS = {1: (2, 14), 2: (22, 6), 3: (16, 4)}
+# Corps et graisse des titres. `setMarkdown` ignore aussi le `font-size` du CSS :
+# les titres tombaient sur les tailles par défaut de Qt, dans la face à lire —
+# un H1 en serif gras de 32 pt qui criait plus fort que tout le résumé.
+_HEADING_FONTS = {1: (16, QFont.Weight.DemiBold), 2: (13, QFont.Weight.DemiBold), 3: (12, QFont.Weight.DemiBold)}
+# Retrait d'une puce. Les 40 px par défaut de Qt décollaient les listes du texte.
+_LIST_INDENT = 20
+# « Sujets abordés : » — le deux-points final est une habitude du modèle, pas
+# de la typographie : un titre ne s'annonce pas.
+_HEADING_COLON = re.compile(r"^(#{1,6}\s.*?)\s*:\s*$", re.MULTILINE)
 
 
 def _rgba(color) -> str:
@@ -61,9 +72,20 @@ def markdown_css(theme: Theme) -> str:
     """
 
 
+def apply_ink(browser: QTextBrowser, theme: Theme) -> None:
+    """Couleur du texte par la palette : `setMarkdown` ignore le `color` du CSS.
+
+    Sans elle, le corps suit la palette de la plateforme, qui ne connaît ni
+    l'encre brune de Benji ni, hors session macOS, le thème sombre.
+    """
+    palette = browser.palette()
+    palette.setColor(QPalette.ColorRole.Text, theme.ink)
+    browser.setPalette(palette)
+
+
 def render_markdown(browser: QTextBrowser, text: str) -> None:
     """Rend `text` puis repose les marges de titre que le CSS ne peut pas fixer."""
-    browser.setMarkdown(text)
+    browser.setMarkdown(_HEADING_COLON.sub(r"\1", text))
     apply_heading_margins(browser.document())
 
 
@@ -74,6 +96,9 @@ def apply_heading_margins(doc) -> None:
     sans widget autour : il a besoin des mêmes marges, sinon les sections du
     compte rendu se collent les unes aux autres sur le papier.
     """
+    doc.setIndentWidth(_LIST_INDENT)
+    # La voix de l'app, première famille de la pile (`setFontFamilies` veut des noms nus).
+    ui_family = FONT_UI.split(",")[0].strip().strip('"')
     block = doc.begin()
     while block.isValid():
         level = block.blockFormat().headingLevel()
@@ -82,7 +107,15 @@ def apply_heading_margins(doc) -> None:
             fmt = block.blockFormat()
             fmt.setTopMargin(top)
             fmt.setBottomMargin(bottom)
-            QTextCursor(block).setBlockFormat(fmt)
+            cursor = QTextCursor(block)
+            cursor.setBlockFormat(fmt)
+            size, weight = _HEADING_FONTS.get(level, _HEADING_FONTS[3])
+            char = QTextCharFormat()
+            char.setFontFamilies([ui_family])
+            char.setFontPointSize(size)
+            char.setFontWeight(weight)
+            cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+            cursor.mergeCharFormat(char)
         block = block.next()
 
 
@@ -101,6 +134,7 @@ class MarkdownView(QTextBrowser):
     def apply_theme(self, theme: Theme) -> None:
         self.setStyleSheet("QTextBrowser { background: transparent; border: none; }")
         self.document().setDefaultStyleSheet(markdown_css(theme))
+        apply_ink(self, theme)
         # Re-rendre pour que la nouvelle feuille prenne : le document garde son
         # markdown source, pas le HTML déjà composé.
         current = self.property("_markdown_source") or ""

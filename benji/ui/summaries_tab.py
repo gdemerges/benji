@@ -68,6 +68,10 @@ class SummariesTab(QWidget):
         self.list_widget.setFrameShape(QListWidget.Shape.NoFrame)
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.list_widget.setSpacing(2)
+        # Les extraits s'ellipsent : une barre horizontale sous la liste ne
+        # servait qu'à lire la fin d'une date.
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list_widget.setResizeMode(QListWidget.ResizeMode.Adjust)
 
         self.preview = QTextBrowser()
         self.preview.setOpenExternalLinks(True)
@@ -196,10 +200,14 @@ class SummariesTab(QWidget):
     def _apply_preview_css(self) -> None:
         """Même feuille que la fenêtre Résumé en direct : une seule voix."""
         from benji.ui.style import reading_font
-        from benji.ui.widgets.markdown_view import markdown_css
+        from benji.ui.widgets.markdown_view import apply_ink, markdown_css
 
-        self.preview.document().setDefaultStyleSheet(markdown_css(current_theme()))
+        theme = current_theme()
+        self.preview.document().setDefaultStyleSheet(markdown_css(theme))
         self.preview.document().setDefaultFont(reading_font())
+        # Le `padding` du CSS est ignoré lui aussi : le texte touchait le filet.
+        self.preview.document().setDocumentMargin(24)
+        apply_ink(self.preview, theme)
         path = self._selected_path()
         if path and not path.startswith(_PENDING_PREFIX) and not path.startswith(_HEADER_PREFIX):
             try:
@@ -264,7 +272,9 @@ class SummariesTab(QWidget):
         widget = SummaryItem(dt, snippet)
         item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, str(path))
-        item.setSizeHint(widget.sizeHint())
+        # Largeur nulle : l'item prend celle de la liste, et l'extrait s'ellipse.
+        # Avec la largeur « idéale » du widget, l'item débordait de la liste.
+        item.setSizeHint(QSize(0, widget.sizeHint().height()))
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, widget)
 
@@ -288,11 +298,21 @@ class SummariesTab(QWidget):
 
     @staticmethod
     def _first_line(p: Path) -> str:
+        """Première phrase de contenu du résumé — son premier sujet, en général.
+
+        Le titre (« Résumé de session — 28/08/2026 18:28 ») et les intertitres
+        sont sautés : la liste montrait la même date trois fois par ligne et
+        rien de ce dont on avait parlé.
+        """
         try:
             for line in p.read_text(encoding="utf-8").splitlines():
-                line = line.strip().lstrip("#").strip()
-                if line:
-                    return (line[:70] + "…") if len(line) > 70 else line
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                line = line.lstrip("-*•").strip().replace("**", "")
+                if not line or line.endswith(":"):
+                    continue
+                return (line[:90] + "…") if len(line) > 90 else line
         except Exception:
             pass
         return ""
