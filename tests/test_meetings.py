@@ -50,6 +50,7 @@ def test_rename_et_delete(store):
     assert store.get(meeting.id) is None
 
 
+@pytest.mark.posix_perms
 def test_fichier_ecrit_en_0600(store):
     store.start()
     assert stat.S_IMODE(os.stat(store.path).st_mode) == 0o600

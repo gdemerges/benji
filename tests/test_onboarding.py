@@ -19,6 +19,7 @@ def test_le_premier_lancement_est_detecte(tmp_path):
     assert onboarding.needs_onboarding(marker) is False
 
 
+@pytest.mark.posix_perms
 def test_le_marqueur_est_ecrit_en_0600(tmp_path):
     """Il enregistre l'état de l'autorisation micro : c'est de la donnée
     utilisateur, comme le reste de ce dossier."""

@@ -8,8 +8,19 @@ testée sans charger le moindre modèle.
 
 from dataclasses import dataclass
 
+import pytest
+
 import benji.stt.backend as backend_mod
 from benji.stt.backend import build_backend, group_tokens_into_words, words_from_result
+
+
+@pytest.fixture(autouse=True)
+def _chemin_parakeet(monkeypatch):
+    """Ce module teste le chemin MLX : la sonde est fixée, pas lue sur la
+    machine. Sans ça, sous Windows/Linux, `build_backend` prendrait
+    faster-whisper et irait chercher des poids (cf. le miroir dans
+    `test_faster_whisper_backend.py`)."""
+    monkeypatch.setattr(backend_mod, "_parakeet_available", lambda: True)
 
 
 @dataclass
@@ -134,8 +145,8 @@ def test_les_poids_sont_materialises_a_la_construction(monkeypatch):
     qui préchauffe sur du silence — Parakeet n'en décode aucun token, donc le
     décodeur ne tourne jamais et rien n'est lié.
     """
-    import mlx.core as mx
-    import parakeet_mlx
+    mx = pytest.importorskip("mlx.core")
+    parakeet_mlx = pytest.importorskip("parakeet_mlx")
 
     from benji.stt.backend import ParakeetBackend
 

@@ -89,6 +89,9 @@ qt_api = "pyside6"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "posix_perms: vérifie des bits de permission POSIX (0600) — sauté sous Windows, où NTFS passe par des ACL",
+]
 
 [tool.ruff]
 # No mypy / type stubs (project rule) — ruff is the only static gate.

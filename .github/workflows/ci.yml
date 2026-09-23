@@ -12,10 +12,27 @@ concurrency:
 
 jobs:
   lint-and-test:
-    # Apple Silicon runner — matches the project's target (Python 3.12, mlx).
-    runs-on: macos-14
+    # macOS Apple Silicon est la cible (Parakeet/MLX). Windows et Linux n'ont
+    # aucun poste de test disponible : ces runners en sont le seul substitut.
+    # Ils ne remplacent pas une vraie machine (ni micro ni session graphique),
+    # mais attrapent résolution des dépendances, imports réservés à un OS et
+    # tests qui supposent tourner sur Mac.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install system libraries (Linux)
+        # PortAudio pour sounddevice ; EGL/xkbcommon/fontconfig/dbus pour Qt,
+        # même en plateforme offscreen. macOS et Windows les embarquent.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libportaudio2 libegl1 libgl1 \
+            libxkbcommon0 libfontconfig1 libdbus-1-3 libglib2.0-0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -26,11 +43,12 @@ jobs:
         run: uv sync --dev
 
       - name: Lint (ruff)
+        if: runner.os == 'macOS'
         run: uv run ruff check .
 
       - name: Run tests
         # Qt tests need a headless platform plugin (no display on CI).
-        # The suite mocks the Silero VAD and never loads a real Whisper model,
+        # The suite mocks the Silero VAD and never loads a real STT model,
         # so no model downloads happen here.
         env:
           QT_QPA_PLATFORM: offscreen

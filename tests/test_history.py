@@ -28,6 +28,7 @@ def test_add_tague_la_reunion_courante(history):
     assert entries[0]["meeting"] == meetings.current_meeting().id
 
 
+@pytest.mark.posix_perms
 def test_fichier_cree_en_0600(history):
     history.add("secret de réunion")
     mode = stat.S_IMODE(os.stat(history.history_file).st_mode)

@@ -6,6 +6,8 @@ est le plus important — une substitution abusive fabrique un faux dans un
 compte rendu de réunion.
 """
 
+import pytest
+
 from benji.stt import lexicon
 from benji.stt.lexicon import (
     apply_lexicon,
@@ -179,6 +181,7 @@ def test_le_terme_appris_ne_fuite_pas_dans_les_logs(tmp_path, caplog):
     assert "Bertrand" not in caplog.text
 
 
+@pytest.mark.posix_perms
 def test_un_glossaire_appris_est_ecrit_en_0600(tmp_path):
     path = tmp_path / "glossary.txt"
     lexicon.add_term("Datadog", path)

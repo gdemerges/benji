@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
@@ -207,4 +209,5 @@ def test_le_glossaire_est_charge_et_enregistre_en_0600(qapp, tmp_path, monkeypat
     dlg._save()
 
     assert lexicon.load_terms(path) == ["Datadog", "Kubernetes"]
-    assert oct(path.stat().st_mode)[-3:] == "600"
+    if sys.platform != "win32":  # pas de bits POSIX sous NTFS, cf. `posix_perms`
+        assert oct(path.stat().st_mode)[-3:] == "600"
