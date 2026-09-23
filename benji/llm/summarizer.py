@@ -155,8 +155,10 @@ def _stream(model, tokenizer, prompt: str, on_token: Callable[[str], None]) -> s
     chunks: list[str] = []
     for response in stream_generate(model, tokenizer, prompt=prompt, max_tokens=MAX_TOKENS):
         # mlx_lm.stream_generate yields a `GenerationResponse` with a `.text` field
-        # (incremental text since the previous yield).
-        piece = getattr(response, "text", None) or str(response)
+        # (incremental text since the previous yield). Le dernier porte le jeton
+        # de fin et un texte vide : un `or str(response)` versait alors toute la
+        # représentation de l'objet (logprobs, tokens/s…) à la fin du résumé.
+        piece = response if isinstance(response, str) else getattr(response, "text", "")
         if piece:
             chunks.append(piece)
             try:
