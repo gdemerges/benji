@@ -86,3 +86,13 @@ def test_settings_button_invokes_callback(qapp):
     w._open_preferences()
     assert called == [True]
     w.close()
+
+
+def test_deconnecte_le_bouton_ouvre_directement_la_connexion(qapp, monkeypatch):
+    """Pas de menu à une seule entrée entre le bouton et la fenêtre."""
+    w = _window(FakeSession(authenticated=False))
+    opened = []
+    monkeypatch.setattr(w._account, "login", lambda parent=None: opened.append(parent))
+    w._open_account_menu()
+    assert opened == [w]
+    w.close()

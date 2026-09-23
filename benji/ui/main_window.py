@@ -444,7 +444,15 @@ class MainWindow(QMainWindow):
         return menu
 
     def _open_account_menu(self) -> None:
-        """Reconstruit le menu à l'ouverture et le pose sous le bouton compte."""
+        """Déconnecté : la fenêtre de connexion, directement. Connecté : le menu
+        du compte, reconstruit à l'ouverture et posé sous le bouton.
+
+        Un menu à une seule entrée (« Se connecter / créer un compte… ») n'était
+        qu'un clic de plus entre le bouton et ce qu'il promettait.
+        """
+        if self._account is not None and not self._account.session.is_authenticated:
+            self._account.login(parent=self)
+            return
         menu = self._build_account_menu()
         if menu is None:
             return

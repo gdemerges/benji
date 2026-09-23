@@ -211,3 +211,24 @@ def test_le_glossaire_est_charge_et_enregistre_en_0600(qapp, tmp_path, monkeypat
     assert lexicon.load_terms(path) == ["Datadog", "Kubernetes"]
     if sys.platform != "win32":  # pas de bits POSIX sous NTFS, cf. `posix_perms`
         assert oct(path.stat().st_mode)[-3:] == "600"
+
+
+def test_les_sections_defilent_et_les_boutons_restent_visibles(qapp, tmp_path):
+    """Sur un petit écran, la fin des réglages et « Enregistrer » restaient hors
+    d'atteinte : les sections défilent, les boutons sont hors de la zone."""
+    from PySide6.QtWidgets import QScrollArea
+
+    from benji.config import AudioConfig
+    from benji.ui.preferences_dialog import PreferencesDialog
+
+    dlg = PreferencesDialog(
+        STTConfig(), UIConfig(), _settings(tmp_path),
+        llm_config=LLMConfig(), audio_config=AudioConfig(), device_lister=lambda: [],
+    )
+    scroll = dlg.findChild(QScrollArea)
+    assert scroll is not None
+    assert scroll.widget().isAncestorOf(dlg._ui_box)
+    assert not scroll.isAncestorOf(dlg._save_btn)
+    screen = dlg.screen().availableGeometry().height()
+    assert dlg.height() <= screen
+    dlg.close()

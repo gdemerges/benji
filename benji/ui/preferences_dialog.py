@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,8 +29,10 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QPlainTextEdit,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 
 from benji.settings import UserSettings
@@ -91,6 +93,10 @@ def _query_input_devices() -> list[dict]:
         return []
 
 
+def rgba_hex(c) -> str:
+    return f"#{c.red():02x}{c.green():02x}{c.blue():02x}"
+
+
 def _resolve_font(family: str) -> QFont:
     """QFont affichable dans le combo pour une famille de config donnée."""
     if not family or family.startswith("."):
@@ -131,11 +137,33 @@ class PreferencesDialog(QDialog):
         self._build_ui()
         install_theme_listener(self._apply_theme)
         self._apply_theme()
+        # Après le thème : c'est la feuille de style qui fixe le corps des
+        # étiquettes. Mesurées avant, elles l'étaient dans la fonte par défaut,
+        # plus petite, et la plus longue se faisait rogner (« ésumé en direct »).
+        self._align_forms()
+        self._fit_to_screen()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 12, 28, 20)
+        # Les sections défilent, les boutons restent : sur un écran de portable,
+        # la fenêtre dépassait le bas de l'écran et « Enregistrer » avec elle —
+        # sans défilement, la fin des réglages était tout simplement inatteignable.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._content = QWidget()
+        self._content.setObjectName("prefs_content")
+        layout = QVBoxLayout(self._content)
+        layout.setContentsMargins(28, 12, 28, 12)
         layout.setSpacing(6)
+
+        self._scroll = QScrollArea()
+        self._scroll.setObjectName("prefs_scroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setWidget(self._content)
+        outer.addWidget(self._scroll, 1)
 
         # === Transcription (redémarrage requis) ===
         self._stt_box = QGroupBox("Transcription")
@@ -304,8 +332,26 @@ class PreferencesDialog(QDialog):
         self._cancel_btn.setObjectName("ghost_btn")
         self._buttons.accepted.connect(self._save)
         self._buttons.rejected.connect(self.reject)
-        layout.addWidget(self._buttons)
-        self._align_forms()
+
+        self._footer = QWidget()
+        self._footer.setObjectName("prefs_footer")
+        footer_layout = QVBoxLayout(self._footer)
+        footer_layout.setContentsMargins(28, 12, 28, 16)
+        footer_layout.addWidget(self._buttons)
+        outer.addWidget(self._footer)
+
+    def _fit_to_screen(self) -> None:
+        """Assez haute pour tout montrer si l'écran le permet, jamais plus haute
+        que lui : au-delà, c'est la zone défilante qui prend le relais."""
+        wanted = self._content.sizeHint().height() + self._footer.sizeHint().height()
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        limit = int(screen.availableGeometry().height() * 0.85) if screen else wanted
+        # Assez large pour le contenu *et* la barre de défilement : plus étroite,
+        # la zone rognait la colonne des étiquettes (« ésumé en direct »).
+        bar = self._scroll.verticalScrollBar().sizeHint().width()
+        width = max(self.minimumWidth(), self._content.minimumSizeHint().width() + bar)
+        self.setMinimumWidth(width)
+        self.resize(width, min(wanted, limit))
 
     def _align_forms(self) -> None:
         """Une seule colonne d'étiquettes pour toutes les sections.
@@ -321,6 +367,7 @@ class PreferencesDialog(QDialog):
             for row in range(form.rowCount()):
                 item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
                 if item is not None and isinstance(item.widget(), QLabel):
+                    item.widget().ensurePolished()
                     labels.append(item.widget())
         if not labels:
             return
@@ -381,7 +428,7 @@ class PreferencesDialog(QDialog):
         sec = t.secondary_label
         # Le bouton d'enregistrement est un aplat d'encre : dans Benji le rouge
         # ne dit qu'une chose, « on enregistre » — pas « valider ».
-        on_ink = "#ffffff" if not t.is_dark else f"#{t.paper.red():02x}{t.paper.green():02x}{t.paper.blue():02x}"
+        on_ink = rgba_hex(t.sheet if not t.is_dark else t.paper)
         field_bg = t.card
         field_border = t.spine
 
@@ -390,6 +437,11 @@ class PreferencesDialog(QDialog):
 
         self.setStyleSheet(f"""
             QDialog {{ background-color: {rgba(t.sheet)}; }}
+            QScrollArea#prefs_scroll, QWidget#prefs_content {{ background: transparent; }}
+            QWidget#prefs_footer {{
+                background: transparent;
+                border-top: 1px solid {rgba(t.spine)};
+            }}
             QGroupBox {{
                 font-family: {FONT_UI};
                 font-size: 13px;
