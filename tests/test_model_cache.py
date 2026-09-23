@@ -13,6 +13,14 @@ import pytest
 from benji.llm import model_cache
 
 
+
+@pytest.fixture(autouse=True)
+def _modeles_autorises(monkeypatch):
+    """Ces tests exercent le chargement, pas l'accord (cf. test_onboarding)."""
+    from benji import onboarding
+
+    monkeypatch.setattr(onboarding, "ensure_allowed", lambda *a, **k: None)
+
 @pytest.fixture
 def fake_mlx(monkeypatch):
     """Installe un faux `mlx_lm` qui compte ses chargements."""

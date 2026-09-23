@@ -14,6 +14,14 @@ import benji.stt.backend as backend_mod
 from benji.stt.backend import build_backend, group_tokens_into_words, words_from_result
 
 
+
+@pytest.fixture(autouse=True)
+def _modeles_autorises(monkeypatch):
+    """Ces tests exercent le chargement, pas l'accord (cf. test_onboarding)."""
+    from benji import onboarding
+
+    monkeypatch.setattr(onboarding, "ensure_allowed", lambda *a, **k: None)
+
 @pytest.fixture(autouse=True)
 def _chemin_parakeet(monkeypatch):
     """Ce module teste le chemin MLX : la sonde est fixée, pas lue sur la

@@ -68,6 +68,10 @@ class OnboardingWindow(QDialog):
         self.setFixedSize(640, 540)
 
         self._downloader: onboarding.ModelDownloader | None = None
+        # Vrai dès que l'utilisateur a cliqué « Télécharger » : c'est l'accord
+        # (cf. onboarding.local_models_allowed). Un téléchargement interrompu
+        # garde l'accord — Benji reprendra au démarrage, comme promis à l'écran.
+        self._models_consented = False
         self._mic_state = onboarding.microphone_status()
         self._session = session
 
@@ -192,6 +196,7 @@ class OnboardingWindow(QDialog):
             self._session is not None and self._session.is_authenticated
         )
         self.offer_cloud.toggled.connect(self._on_offer_cloud_toggled)
+        self.offer_free.toggled.connect(lambda _checked: self._refresh_offer_status())
 
         self.offer_status = QLabel("")
         self.offer_status.setWordWrap(True)
@@ -239,8 +244,14 @@ class OnboardingWindow(QDialog):
         from benji.settings import UserSettings
 
         connected = self._session is not None and self._session.is_authenticated
-        provider = "remote" if (self.offer_cloud.isChecked() and connected) else "parakeet"
-        UserSettings().set_value("stt_provider", provider)
+        cloud = self.offer_cloud.isChecked() and connected
+        provider = "remote" if cloud else "parakeet"
+        settings = UserSettings()
+        settings.set_value("stt_provider", provider)
+        # Cloud seul : les résumés aussi, sinon le premier d'entre eux irait
+        # chercher un modèle local que l'utilisateur a refusé.
+        if cloud and not self._wants_local():
+            settings.set_value("summary_provider", "remote")
 
     def _build_microphone(self) -> QWidget:
         page = QWidget()
@@ -347,7 +358,32 @@ class OnboardingWindow(QDialog):
 
     # --- modèles ---
 
+    def _wants_local(self) -> bool:
+        return self.offer_free.isChecked()
+
+    def _models_blocking(self) -> bool:
+        """Le local est choisi, des poids manquent, et rien n'a été accepté :
+        terminer maintenant laisserait Benji sans moteur — ou le forcerait à
+        télécharger sans accord."""
+        return (
+            self._wants_local()
+            and not self._models_consented
+            and bool(onboarding.missing_models())
+        )
+
     def _refresh_models(self) -> None:
+        if not self._wants_local():
+            # Cloud seul : rien ne se télécharge, et on le dit.
+            self.models_title.setText("Rien à télécharger")
+            self.models_body.setText(
+                "La transcription et les résumés passeront par le cloud Benji. "
+                "Aucun modèle n'est installé sur ce Mac. Vous pourrez toujours "
+                "passer au local plus tard, depuis les Préférences."
+            )
+            self.download_btn.hide()
+            self.progress_label.setText("")
+            return
+        self.models_title.setText("Le moteur de transcription")
         missing = onboarding.missing_models()
         if not missing:
             self.models_body.setText(
@@ -363,14 +399,15 @@ class OnboardingWindow(QDialog):
         )
         self.models_body.setText(
             f"{lines}\n\nSoit environ {onboarding.format_size(total)} à télécharger "
-            "une seule fois. Les fichiers restent dans votre cache : ils ne seront "
-            "pas retéléchargés au prochain lancement."
+            "une seule fois, et seulement si vous l'acceptez : rien ne part sans "
+            "ce bouton. Les fichiers restent dans votre cache."
         )
         self.download_btn.show()
 
     def _start_download(self) -> None:
         if self._downloader is not None:
             return
+        self._models_consented = True
         self.download_btn.setEnabled(False)
         self.download_btn.setText("Téléchargement…")
         self.progress.show()
@@ -420,11 +457,19 @@ class OnboardingWindow(QDialog):
             self.offer_warning.show()
             return
         if index >= self.pages.count() - 1:
-            onboarding.mark_done(microphone=self._mic_state)
+            if self._models_blocking():
+                return
+            local_ok = self._wants_local() and (
+                self._models_consented or not onboarding.missing_models()
+            )
+            onboarding.mark_done(microphone=self._mic_state, local_models=local_ok)
             self._persist_offer_choice()
             self.accept()
             return
         self.pages.setCurrentIndex(index + 1)
+        if self.pages.currentIndex() == self.pages.count() - 1:
+            # Le choix local/cloud a pu changer depuis la construction.
+            self._refresh_models()
         self._refresh_nav()
 
     def _refresh_nav(self) -> None:
@@ -436,7 +481,12 @@ class OnboardingWindow(QDialog):
         # téléchargé reste permis — un utilisateur hors ligne doit pouvoir aller
         # au bout, l'app reprendra les poids au démarrage suivant.
         downloading = self._downloader is not None
-        self.next_btn.setEnabled(not downloading)
+        # Sur l'écran des modèles, « Terminer » attend l'accord si le local est
+        # choisi : sans lui, Benji devrait soit télécharger en douce, soit
+        # démarrer sans moteur. Un échec réseau après le clic, lui, n'empêche
+        # pas de terminer.
+        blocked = last and self._models_blocking()
+        self.next_btn.setEnabled(not downloading and not blocked)
         self.next_btn.setText("Terminer" if last else "Continuer")
         if index == 0:
             self.next_btn.setText("Commencer")

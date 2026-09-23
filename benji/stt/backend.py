@@ -187,9 +187,7 @@ class WhisperBackend:
 
     def __init__(self, model_size: str = "medium", language: str | None = "fr"):
         self._mlx = None
-        self.repo = _MLX_WHISPER_MODELS.get(
-            model_size, f"mlx-community/whisper-{model_size}-mlx"
-        )
+        self.repo = _whisper_repo(model_size)
         self.language = language
         log.info("Whisper '%s' armé (langue : %s) — poids chargés au 1er usage",
                  self.repo, language or "auto")
@@ -387,6 +385,10 @@ def build_backend(model_id: str = DEFAULT_MODEL) -> STTBackend:
     return ParakeetBackend(model_id)
 
 
+def _whisper_repo(model_size: str) -> str:
+    return _MLX_WHISPER_MODELS.get(model_size, f"mlx-community/whisper-{model_size}-mlx")
+
+
 def _whisper_available() -> bool:
     """Présence de mlx-whisper, sans en charger les poids.
 
@@ -422,6 +424,18 @@ def build_final_backend(
         log.warning(
             "mlx-whisper absent : la passe finale retombe sur Parakeet, dont la "
             "langue n'est pas garantie."
+        )
+        return None
+    from benji import onboarding
+
+    try:
+        # Chargé paresseusement, en pleine réunion : c'est maintenant qu'on
+        # vérifie qu'il ne déclenchera pas un téléchargement non accepté.
+        onboarding.ensure_allowed(_whisper_repo(model_size))
+    except onboarding.ModelNotAllowed:
+        log.warning(
+            "Whisper non téléchargé et non autorisé : la passe finale reste sur "
+            "Parakeet, dont la langue n'est pas garantie."
         )
         return None
     whisper = WhisperBackend(model_size, language)

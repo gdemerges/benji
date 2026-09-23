@@ -117,7 +117,6 @@ class BenjiApplication:
         """Démarre l'app, entre dans la boucle Qt, puis arrête proprement."""
         self._build_configs()
         self._build_account()
-        self._build_pipeline()
         self._create_qapp()
 
         if not self._run_onboarding():
@@ -126,6 +125,11 @@ class BenjiApplication:
             # pas pourquoi. On sort avant d'ouvrir quoi que ce soit.
             log.info("Premier lancement abandonné — arrêt.")
             return 0
+        # Le pipeline se construit **après** l'assistant : c'est lui qui décide
+        # local ou cloud. Construit avant, un « cloud Benji » choisi au premier
+        # lancement ne valait qu'au suivant — et celui-ci chargeait Parakeet,
+        # c'est-à-dire téléchargeait 2,3 Go que l'utilisateur venait de refuser.
+        self._build_pipeline()
 
         splash = self._show_splash()
         try:
@@ -264,13 +268,36 @@ class BenjiApplication:
         """
         from benji import onboarding
 
-        if self.remote_mode or not onboarding.needs_onboarding():
+        if not self._onboarding_required():
             return True
         from PySide6.QtWidgets import QDialog
 
         from benji.ui.onboarding_window import OnboardingWindow
 
-        return OnboardingWindow(session=self.session).exec() == QDialog.DialogCode.Accepted
+        accepted = OnboardingWindow(session=self.session).exec() == QDialog.DialogCode.Accepted
+        if accepted:
+            # Le choix local/cloud vient d'être écrit dans les préférences : il
+            # vaut pour ce lancement-ci, pas seulement le suivant.
+            self.user_settings.hydrate(
+                stt=self.cfg.stt, ui=self.cfg.ui, llm=self.cfg.llm, audio=self.cfg.audio
+            )
+        return accepted
+
+    def _onboarding_required(self) -> bool:
+        """Premier lancement — ou moteur local absent et jamais accepté.
+
+        Le second cas est celui qui téléchargeait en douce : un assistant
+        terminé sans télécharger, ou un passage du cloud au local dans les
+        Préférences. Plutôt que d'aller chercher 2 Go sans rien dire, on
+        repose la question.
+        """
+        from benji import onboarding
+
+        if self.remote_mode or self.cfg.stt.stt_provider == "remote":
+            return False
+        if onboarding.needs_onboarding():
+            return True
+        return bool(onboarding.missing_models()) and not onboarding.local_models_allowed()
 
     def _show_splash(self) -> SplashWindow:
         # Charge le modèle sur un thread de fond pour que l'UI reste réactive et

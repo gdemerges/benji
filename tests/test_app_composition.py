@@ -263,10 +263,26 @@ def test_l_assistant_est_saute_quand_le_marqueur_existe(monkeypatch):
     from benji import onboarding
 
     monkeypatch.setattr(onboarding, "needs_onboarding", lambda *a: False)
+    monkeypatch.setattr(onboarding, "missing_models", lambda *a: [])
 
     app = BenjiApplication()
     # Rien à instancier : la fenêtre n'est importée que si l'assistant tourne.
     assert app._run_onboarding() is True
+
+
+def test_moteur_local_absent_et_jamais_accepte_repose_la_question(monkeypatch):
+    """Assistant terminé sans télécharger : on ne va pas chercher 2 Go en
+    douce au démarrage, on redemande."""
+    from benji import onboarding
+
+    monkeypatch.setattr(onboarding, "needs_onboarding", lambda *a: False)
+    monkeypatch.setattr(onboarding, "missing_models", lambda *a: [("r", "l", 1)])
+    monkeypatch.setattr(onboarding, "local_models_allowed", lambda *a: False)
+    assert BenjiApplication()._onboarding_required() is True
+
+    # Accord donné (un téléchargement a été lancé puis interrompu) : Benji reprend.
+    monkeypatch.setattr(onboarding, "local_models_allowed", lambda *a: True)
+    assert BenjiApplication()._onboarding_required() is False
 
 
 def test_le_mode_remote_na_pas_d_assistant(monkeypatch):

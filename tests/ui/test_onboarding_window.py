@@ -144,7 +144,7 @@ def test_le_choix_payant_connecte_ecrit_stt_provider_remote(qtbot, monkeypatch, 
 def test_l_ecran_des_modeles_annonce_la_taille(window):
     text = window.models_body.text()
 
-    assert "4,1 Go" in text
+    assert "5,0 Go" in text
     assert not window.download_btn.isHidden()
 
 
@@ -180,10 +180,51 @@ def test_terminer_pose_le_marqueur(window, tmp_path, monkeypatch):
     marker = tmp_path / onboarding.MARKER_NAME
     monkeypatch.setattr(onboarding, "marker_path", lambda: marker)
     window.pages.setCurrentIndex(3)
+    window._models_consented = True  # « Télécharger » a été cliqué
 
     window._next()
 
     assert onboarding.needs_onboarding(marker) is False
+    assert onboarding.local_models_allowed(marker) is True
+
+
+def test_local_choisi_sans_accord_on_ne_termine_pas(window, tmp_path, monkeypatch):
+    """Terminer sans avoir accepté forcerait Benji à télécharger en douce au
+    démarrage — ou à démarrer sans moteur."""
+    marker = tmp_path / onboarding.MARKER_NAME
+    monkeypatch.setattr(onboarding, "marker_path", lambda: marker)
+    window.pages.setCurrentIndex(3)
+    window._refresh_nav()
+
+    assert not window.next_btn.isEnabled()
+    window._next()
+    assert onboarding.needs_onboarding(marker) is True
+
+
+def test_cloud_seul_rien_a_telecharger_et_pas_d_accord(qtbot, monkeypatch, tmp_path):
+    marker = tmp_path / onboarding.MARKER_NAME
+    monkeypatch.setattr(onboarding, "marker_path", lambda: marker)
+    monkeypatch.setattr(onboarding, "hf_cache_root", lambda: tmp_path / "hf")
+    written = {}
+    monkeypatch.setattr(
+        "benji.settings.UserSettings.set_value",
+        lambda self, key, value: written.__setitem__(key, value),
+    )
+    from benji.ui.onboarding_window import OnboardingWindow
+
+    w = OnboardingWindow(session=_FakeSession(authenticated=True, email="a@b.com"))
+    qtbot.addWidget(w)
+    w.offer_free.setChecked(False)
+    w.pages.setCurrentIndex(2)
+    w._next()  # arrive sur l'écran des modèles
+
+    assert w.download_btn.isHidden()
+    assert "Rien à télécharger" in w.models_title.text()
+    assert w.next_btn.isEnabled()
+
+    w._next()
+    assert onboarding.local_models_allowed(marker) is False
+    assert written == {"stt_provider": "remote", "summary_provider": "remote"}
 
 
 def test_on_ne_peut_pas_sortir_pendant_un_telechargement(window):
@@ -197,6 +238,7 @@ def test_on_ne_peut_pas_sortir_pendant_un_telechargement(window):
 
 def test_un_telechargement_en_echec_propose_de_reessayer(window):
     window.pages.setCurrentIndex(3)
+    window._models_consented = True  # l'échec suit forcément un clic
     window._on_download_done("réseau injoignable")
 
     assert "réseau injoignable" in window.progress_label.text()

@@ -43,10 +43,13 @@ def load(model_id: str) -> tuple:
         cached = _cache.get(model_id)
         if cached is not None:
             return cached
+        from benji import onboarding
         from benji.llm import mlx_runner
 
+        # Pas de téléchargement sans accord : `mlx_lm.load` irait chercher les
+        # poids sur le Hub en silence (cf. onboarding.ensure_allowed).
+        onboarding.ensure_allowed(model_id)
         log.info("Chargement du modèle '%s'...", model_id)
-        log.info("(Le premier lancement télécharge le modèle, ~800 Mo)")
         # Chargé **sur le fil MLX**, comme les générations qui suivront : MLX lie
         # les tableaux au thread qui les évalue en premier, et des poids chargés
         # ailleurs seraient inutilisables (cf. benji/llm/mlx_runner.py).

@@ -19,6 +19,14 @@ import pytest
 from benji.llm import mlx_runner
 
 
+
+@pytest.fixture(autouse=True)
+def _modeles_autorises(monkeypatch):
+    """Ces tests exercent le chargement, pas l'accord (cf. test_onboarding)."""
+    from benji import onboarding
+
+    monkeypatch.setattr(onboarding, "ensure_allowed", lambda *a, **k: None)
+
 @pytest.fixture(autouse=True)
 def _fresh_runner():
     mlx_runner.shutdown()

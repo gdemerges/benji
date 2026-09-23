@@ -108,7 +108,7 @@ def test_missing_models_ne_liste_que_ce_qui_manque(tmp_path):
 
     missing = onboarding.missing_models(tmp_path)
 
-    assert [m[0] for m in missing] == [onboarding.REQUIRED_MODELS[1][0]]
+    assert [m[0] for m in missing] == [m[0] for m in onboarding.REQUIRED_MODELS[1:]]
 
 
 def test_la_racine_du_cache_suit_l_environnement(tmp_path, monkeypatch):
@@ -139,3 +139,70 @@ def test_la_progression_est_bornee():
     assert onboarding.progress_fraction(-5, 100) == 0.0
     assert onboarding.progress_fraction(50, 0) == 0.0
     assert onboarding.progress_fraction(25, 100) == 0.25
+
+
+# --- accord pour les modèles locaux ---
+
+
+def test_sans_marqueur_aucun_accord(tmp_path):
+    assert onboarding.local_models_allowed(tmp_path / "absent.json") is False
+
+
+def test_l_accord_se_lit_dans_le_marqueur(tmp_path):
+    marker = tmp_path / onboarding.MARKER_NAME
+    onboarding.mark_done(marker, local_models=False)
+    assert onboarding.local_models_allowed(marker) is False
+    onboarding.mark_done(marker, local_models=True)
+    assert onboarding.local_models_allowed(marker) is True
+
+
+def test_un_modele_absent_et_refuse_ne_se_telecharge_pas(tmp_path):
+    marker = tmp_path / onboarding.MARKER_NAME
+    onboarding.mark_done(marker, local_models=False)
+    with pytest.raises(onboarding.ModelNotAllowed):
+        onboarding.ensure_allowed("mlx-community/whisper-medium-mlx", marker, tmp_path)
+
+
+def test_un_modele_deja_sur_le_disque_se_charge_toujours(tmp_path):
+    """L'accord porte sur le téléchargement, pas sur l'usage."""
+    marker = tmp_path / onboarding.MARKER_NAME
+    onboarding.mark_done(marker, local_models=False)
+    repo = "mlx-community/whisper-medium-mlx"
+    _snapshot(tmp_path, repo)
+    onboarding.ensure_allowed(repo, marker, tmp_path)
+
+
+def test_le_modele_de_langue_ne_se_charge_pas_sans_accord(monkeypatch):
+    """Le titreur l'appelait dès 300 caractères : 800 Mo téléchargés en douce."""
+    from benji.llm import model_cache
+
+    def refuse(repo_id, *a, **k):
+        raise onboarding.ModelNotAllowed("non")
+
+    monkeypatch.setattr(onboarding, "ensure_allowed", refuse)
+    monkeypatch.setattr(model_cache, "_cache", {})
+    with pytest.raises(onboarding.ModelNotAllowed):
+        model_cache.load("mlx-community/Qwen2.5-1.5B-Instruct-4bit")
+
+
+def test_whisper_refuse_laisse_la_finale_sur_parakeet(monkeypatch):
+    import benji.stt.backend as backend_mod
+
+    monkeypatch.setattr(backend_mod, "_parakeet_available", lambda: True)
+    monkeypatch.setattr(backend_mod, "_whisper_available", lambda: True)
+
+    def refuse(repo_id, *a, **k):
+        raise onboarding.ModelNotAllowed("non")
+
+    monkeypatch.setattr(onboarding, "ensure_allowed", refuse)
+    assert backend_mod.build_final_backend("hybrid", "medium", "fr", fast=object()) is None
+
+
+def test_pyannote_refuse_retombe_sur_la_hauteur(monkeypatch):
+    from benji.stt import diarization
+
+    def refuse(repo_id, *a, **k):
+        raise onboarding.ModelNotAllowed("non")
+
+    monkeypatch.setattr(onboarding, "ensure_allowed", refuse)
+    assert isinstance(diarization.build_tagger("pyannote"), diarization.SpeakerTagger)

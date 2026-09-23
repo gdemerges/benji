@@ -34,9 +34,14 @@ MARKER_NAME = "onboarded.json"
 # Whisper est là alors que le moteur hybride ne l'appelle que sur les segments
 # qui dérivent : justement, ce jour-là on est **en réunion**. Télécharger 1,5 Go
 # au milieu d'une phrase serait pire que de le faire maintenant.
+#
+# Le modèle de langue (résumés, titres de réunion) y est aussi : le titreur
+# l'appelle dès les 300 premiers caractères d'une réunion, il était donc
+# téléchargé en douce — 800 Mo que personne n'avait acceptés.
 REQUIRED_MODELS: tuple[tuple[str, str, int], ...] = (
     ("mlx-community/parakeet-tdt-0.6b-v3", "Moteur de transcription", 2_500_000_000),
     ("mlx-community/whisper-medium-mlx", "Garantie de langue", 1_600_000_000),
+    ("mlx-community/Qwen2.5-1.5B-Instruct-4bit", "Résumés et titres", 900_000_000),
 )
 
 
@@ -51,6 +56,48 @@ def marker_path() -> Path:
 
 def needs_onboarding(path: Path | None = None) -> bool:
     return not (path or marker_path()).exists()
+
+
+# --- accord pour les modèles locaux -------------------------------------------
+#
+# Règle produit : **aucun poids n'est téléchargé sans l'accord de l'utilisateur**.
+# Il peut préférer le cloud Benji (abonnement) et ne jamais vouloir 4 Go sur son
+# disque. L'accord se donne dans l'assistant (bouton « Télécharger ») et vit dans
+# le marqueur ; chaque chargement de modèle local le vérifie avant de toucher au
+# réseau (`ensure_allowed`). Ce qui est déjà sur le disque se charge toujours :
+# l'accord porte sur le téléchargement, pas sur l'usage.
+
+
+class ModelNotAllowed(RuntimeError):
+    """Un modèle manque et l'utilisateur n'a pas accepté de le télécharger."""
+
+
+def local_models_allowed(path: Path | None = None) -> bool:
+    """L'utilisateur a-t-il accepté de télécharger les modèles locaux ?
+
+    Marqueur sans la clé (posé par une version antérieure de l'assistant) :
+    l'accord est réputé donné si le moteur est déjà là — il n'a pu arriver que
+    par le bouton de l'assistant ou un lancement en local délibéré.
+    """
+    try:
+        payload = json.loads((path or marker_path()).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if "local_models" in payload:
+        return bool(payload["local_models"])
+    return is_downloaded(REQUIRED_MODELS[0][0])
+
+
+def ensure_allowed(repo_id: str, marker: Path | None = None,
+                   cache_root: Path | None = None) -> None:
+    """Lève `ModelNotAllowed` si charger `repo_id` déclencherait un
+    téléchargement que l'utilisateur n'a pas accepté."""
+    if is_downloaded(repo_id, cache_root) or local_models_allowed(marker):
+        return
+    raise ModelNotAllowed(
+        "Ce modèle local n'est pas téléchargé, et vous n'avez pas accepté de le "
+        "télécharger. Autorisez les modèles locaux, ou passez par le cloud Benji."
+    )
 
 
 def mark_done(path: Path | None = None, **details) -> None:

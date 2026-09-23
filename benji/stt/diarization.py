@@ -186,7 +186,11 @@ class PyannoteSpeakerTagger:
 def build_tagger(backend: str, max_speakers: int = 4) -> DiarizationBackend:
     """Factory: returns a diarization tagger, falling back to pitch on error."""
     if backend == "pyannote":
+        from benji import onboarding
+
         try:
+            # pyannote irait chercher ses poids sur le Hub : pas sans accord.
+            onboarding.ensure_allowed("pyannote/embedding")
             return PyannoteSpeakerTagger(max_speakers=max_speakers)
         except Exception as e:
             log.warning("pyannote unavailable (%s), falling back to pitch", e)
