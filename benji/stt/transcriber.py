@@ -18,6 +18,32 @@ from benji.stt.lexicon import add_term, apply_lexicon, compile_terms, load_terms
 from benji.stt.postprocessing import is_hallucination, postprocess_text
 
 
+def drop_context_words(words: list[dict], context_s: float) -> list[dict]:
+    """Retire les mots qui tombent dans le contexte placé en tête du tampon.
+
+    Après une coupure forcée, le VAD décode le segment suivant avec la fin du
+    précédent devant lui (cf. `VADConfig.cut_context_ms`) : ces mots-là sont
+    déjà dans le segment d'avant. Un mot appartient au contexte si son milieu y
+    tombe. Un mot sans horodatage suit le mot horodaté le plus proche avant lui
+    (ou, en tête, le premier après) : le moteur en rend parfois sur de la
+    ponctuation recollée. Pure.
+    """
+    if context_s <= 0 or not words:
+        return words
+    decisions: list[bool | None] = []
+    for w in words:
+        known = [t for t in (w.get("start"), w.get("end")) if t is not None]
+        decisions.append(sum(known) / len(known) >= context_s if known else None)
+    first_known = next((d for d in decisions if d is not None), True)
+    kept, last = [], first_known
+    for w, d in zip(words, decisions):
+        if d is not None:
+            last = d
+        if last:
+            kept.append(w)
+    return kept
+
+
 class Transcriber:
     def __init__(
         self,
@@ -177,7 +203,7 @@ class Transcriber:
         gain = min(target / peak, 8.0)  # Cap gain at 8x to limit noise blow-up
         return (audio * gain).astype(np.float32, copy=False)
 
-    def _run_partial(self, audio: np.ndarray) -> None:
+    def _run_partial(self, audio: np.ndarray, context_s: float = 0.0) -> None:
         """Re-décode le tampon entier et stabilise l'affichage par LocalAgreement-2.
 
         Le préfixe sur lequel deux passes successives tombent d'accord est
@@ -194,7 +220,7 @@ class Transcriber:
         if len(audio) < int(0.3 * self.sample_rate):
             return  # trop court pour valoir une passe
 
-        words = list(self.backend.transcribe(audio))
+        words = drop_context_words(list(self.backend.transcribe(audio)), context_s)
         if not words:
             return
 
@@ -237,9 +263,9 @@ class Transcriber:
                 len(audio) / self.sample_rate, latency_ms, is_final=False
             )
 
-    def _run_segment(self, audio: np.ndarray, is_final: bool):
+    def _run_segment(self, audio: np.ndarray, is_final: bool, context_s: float = 0.0):
         if not is_final:
-            self._run_partial(audio)
+            self._run_partial(audio, context_s)
             return
 
         start_t = time.monotonic()
@@ -256,7 +282,10 @@ class Transcriber:
             )
 
         self.display_queue.put({"type": "segment_start"})
-        words = list(self.final_backend.transcribe(audio))
+        # Les horodatages restent relatifs au tampon *avec* contexte : c'est la
+        # même base de temps que les étendues de diarisation, calculées sur ce
+        # même tampon.
+        words = drop_context_words(list(self.final_backend.transcribe(audio)), context_s)
         if words:
             # Le moteur hybride ne streame pas (il faut tout le texte pour juger
             # de sa langue) : il n'y a rien à égrener, et les mots sont déjà à
@@ -449,7 +478,7 @@ class Transcriber:
             if not is_final and not self.transcribe_queue.empty():
                 continue
             try:
-                self._run_segment(audio, is_final)
+                self._run_segment(audio, is_final, item.get("context_s", 0.0))
             except Exception:
                 # A single bad segment should not kill the STT loop.
                 log.exception("STT segment failed (final=%s, %.2fs); skipping",

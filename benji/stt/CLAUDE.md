@@ -116,6 +116,7 @@
   Le fichier (`glossary.txt`, données utilisateur, 0600, éditable dans les
   Préférences) liste des clients et des projets : il n'est **jamais loggué** et
   ne part dans aucun rapport — un test le verrouille.
-- `postprocessing.py` — nettoyage grammaire/ponctuation appliqué après la passe finale
+- `postprocessing.py` — nettoyage grammaire/ponctuation appliqué après la passe finale. En `fr`, **typographie française** (`french_typography`, pure, idempotente) : espace fine insécable avant `; ! ?`, insécable avant `:` et dans « » — insécables pour qu'un retour à la ligne de l'overlay ne laisse jamais un « ? » seul. `14:30` et `?!` épargnés. Filtre d'hallucinations en **deux familles** : les crédits de sous-titrage (jamais prononcés en réunion) valent n'importe où ; les formules de fin (« merci à tous », « à la prochaine »…) seulement si elles sont **tout** le texte — les chercher en sous-chaîne jetait les phrases d'ouverture et de clôture de réunion. Répétition dégénérée : 6 fois le même mot (« non non non non » est humain).
+- **Contexte après coupure forcée** : un message de `transcribe_queue` peut porter `context_s` (cf. `benji/audio/CLAUDE.md`). `drop_context_words` (pure) retire les mots dont le milieu tombe dans ce contexte ; les horodatages restent relatifs au tampon complet, même base de temps que les étendues de diarisation.
 
 `VADConfig.partial_growth_factor` est à 0 (cadence fixe) : le frein progressif protégeait du coût de Whisper et ne faisait plus que rendre le direct poussif.

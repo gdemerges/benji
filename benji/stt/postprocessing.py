@@ -7,7 +7,13 @@ import re
 # filtre reste en place pour Parakeet — il ne coûte qu'une recherche de
 # sous-chaîne, et le jour où un moteur recrache ce boilerplate, il est déjà là.
 # Comparé en minuscules, points de fin retirés.
-HALLUCINATION_PATTERNS = (
+#
+# Deux familles, parce qu'elles ne se jugent pas pareil :
+#
+# - les **crédits** de sous-titrage, que personne ne prononce en réunion : leur
+#   seule présence suffit, et ils traînent un nom derrière eux (« … par la
+#   société Radio-Canada ») ;
+HALLUCINATION_CREDITS = (
     "sous-titres réalisés par",
     "sous-titres fait par",
     "sous-titrage st'",
@@ -15,6 +21,14 @@ HALLUCINATION_PATTERNS = (
     "sous-titres faits par",
     "❤️ par sous-titres",
     "amara.org",
+)
+# - les **formules** de fin de vidéo, qui sont aussi de vraies phrases de
+#   réunion. « Merci à tous d'être venus, on commence » est une ouverture, pas
+#   un rebut : jeter tout le tour dès que la formule apparaît faisait disparaître
+#   précisément les phrases d'ouverture et de clôture. Des formules ne sont un
+#   rebut que si elles font **tout** le texte, à `_FORMULA_SLACK_WORDS` mots de
+#   liaison près (« merci d'avoir regardé **et** à la prochaine »).
+HALLUCINATION_FORMULAS = (
     "merci d'avoir regardé",
     "merci de votre attention",
     "merci à tous",
@@ -27,19 +41,28 @@ HALLUCINATION_PATTERNS = (
     "please subscribe",
     "like and subscribe",
 )
+_FORMULA_SLACK_WORDS = 1
+# Un moteur qui déraille boucle longuement sur le même mot ; un humain dit « non
+# non non non » et continue sa phrase. Le seuil laisse passer le second.
+_MAX_HUMAN_REPEATS = 5
 
 
 def is_hallucination(text: str) -> bool:
     """Vrai si *text* ressemble à un rebut connu ou à une répétition dégénérée
-    (même token 4 fois de suite)."""
+    (même mot plus de `_MAX_HUMAN_REPEATS` fois de suite)."""
     if not text:
         return True
     normalized = text.lower().strip().rstrip(".!?")
-    if any(pattern in normalized for pattern in HALLUCINATION_PATTERNS):
+    if any(pattern in normalized for pattern in HALLUCINATION_CREDITS):
         return True
-    # Repetition detector: any word repeated 4+ times in a row → hallucination.
+    rest = normalized
+    for pattern in HALLUCINATION_FORMULAS:
+        rest = rest.replace(pattern, " ")
+    if rest != normalized and len(re.findall(r"\w+", rest)) <= _FORMULA_SLACK_WORDS:
+        return True
     # Sur du bruit, un modèle qui déraille boucle sur le même token.
-    if re.search(r"\b(\w{2,})\b(?:\W+\1\b){3,}", normalized, flags=re.IGNORECASE):
+    if re.search(rf"\b(\w{{2,}})\b(?:\W+\1\b){{{_MAX_HUMAN_REPEATS},}}",
+                 normalized, flags=re.IGNORECASE):
         return True
     return False
 
@@ -72,12 +95,15 @@ def postprocess_text(text: str, language: str = None) -> str:
     # Add space after punctuation — sauf entre deux chiffres, pour ne pas
     # casser les nombres (« 2,5 », « 3.14 »).
     text = re.sub(r'((?<!\d)[,.!?;:]|[,.!?;:](?!\d))\s*', r'\1 ', text)
+    # … mais pas à l'intérieur d'une ponctuation composée : « ?! », « ... ».
+    text = re.sub(r'(?<=[.!?]) (?=[.!?])', '', text)
 
-    # Fix French apostrophes (e.g., "qu ' on" -> "qu'on")
-    text = re.sub(r"([a-z])\s*'\s*([a-z])", r"\1'\2", text, flags=re.IGNORECASE)
+    # Fix French apostrophes (e.g., "qu ' on" -> "qu'on"). `[^\W\d_]` = une
+    # lettre, accents compris : `[a-z]` laissait « l ' été » en l'état.
+    text = re.sub(r"([^\W\d_])\s*(['’])\s*([^\W\d_])", r"\1\2\3", text)
 
-    # Fix hyphens (e.g., "est - ce" -> "est-ce")
-    text = re.sub(r"([a-z])\s*-\s*([a-z])", r"\1-\2", text, flags=re.IGNORECASE)
+    # Fix hyphens (e.g., "est - ce" -> "est-ce", "peut - être" -> "peut-être")
+    text = re.sub(r"([^\W\d_])\s*-\s*([^\W\d_])", r"\1-\2", text)
 
     text = re.sub(r'\s+', ' ', text)  # Remove multiple spaces
 
@@ -105,9 +131,40 @@ def postprocess_text(text: str, language: str = None) -> str:
         text = re.sub(r"\bdont\b", "don't", text, flags=re.IGNORECASE)
         text = re.sub(r"\bcant\b", "can't", text, flags=re.IGNORECASE)
 
+    if language == 'fr':
+        text = french_typography(text)
+
     # Remove trailing spaces
     text = text.strip()
 
+    return text
+
+
+# Espace fine insécable (avant ; ! ?) et espace insécable (avant :, dans « »).
+NNBSP = "\u202f"
+NBSP = "\u00a0"
+
+
+def french_typography(text: str) -> str:
+    """Espacements de la typographie française autour de la ponctuation haute.
+
+    Le nettoyage générique colle la ponctuation au mot précédent, à l'anglaise :
+    « Vraiment? » au lieu de « Vraiment ? ». Les espaces posées ici sont
+    **insécables**, pour qu'un retour à la ligne ne laisse jamais un « ? » seul
+    en tête de ligne — dans l'overlay, où le texte est justement coupé à la
+    largeur de l'écran. Pure et idempotente : elle se rejoue sans doubler les
+    espaces.
+
+    Deux exceptions : une ponctuation qui en suit une autre (« ?! ») reste
+    collée, et `:` entre deux chiffres (« 14:30 ») n'est pas une ponctuation.
+    """
+    if not text:
+        return text
+    text = re.sub(r"(?<=[^\s?!;:])[ \u00a0\u202f]?([;!?])", NNBSP + r"\1", text)
+    text = re.sub(r"(?<=[^\s?!;:\d])[ \u00a0\u202f]?:", NBSP + ":", text)
+    text = re.sub(r"(?<=\d)[ \u00a0\u202f]?:(?!\d)", NBSP + ":", text)
+    text = re.sub(r"«[ \u00a0\u202f]*", "«" + NBSP, text)
+    text = re.sub(r"[ \u00a0\u202f]*»", NBSP + "»", text)
     return text
 
 

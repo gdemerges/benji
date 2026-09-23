@@ -31,9 +31,28 @@ class AudioConfig:
 @dataclass
 class VADConfig:
     speech_threshold: float = 0.5
+    # Hystérésis : la parole *commence* au-dessus de `speech_threshold`, mais ne
+    # *s'arrête* que sous `speech_threshold - speech_end_hysteresis` (la valeur
+    # recommandée par Silero). Sans elle, les syllabes faibles d'une fin de
+    # phrase comptaient comme du silence — surtout quand le seuil adaptatif
+    # monte dans une pièce bruyante — et l'énoncé était coupé trop tôt.
+    speech_end_hysteresis: float = 0.15
     silence_duration_ms: int = 600  # Wait longer before cutting, reduces fragmentation
     min_speech_duration_ms: int = 300  # Keep short interjections ("oui", "ok", "non")
     max_speech_duration_s: float = 8.0  # Force flush sooner for long utterances
+    # Une coupure forcée (énoncé plus long que `max_speech_duration_s`) tombait
+    # net, au milieu d'un mot, que chaque moitié décodait ensuite de travers. On
+    # coupe désormais au point le plus calme (confiance VAD + énergie, lissées)
+    # parmi les `cut_search_ms` dernières millisecondes, et la suite repart dans
+    # le tampon suivant au lieu d'être tranchée (cf. audio/vad.py).
+    cut_search_ms: int = 1500
+    # Après une coupure forcée, la parole continue : le segment suivant est
+    # décodé avec cette queue du précédent devant lui, pour que son premier mot
+    # ait du contexte. Les mots qui tombent dans ce contexte sont retirés du
+    # texte (cf. stt/transcriber.py) — ils appartiennent déjà au segment d'avant.
+    # 0 = pas de contexte. Sans objet après une vraie pause, où le contexte ne
+    # serait que du silence.
+    cut_context_ms: int = 1000
     pre_speech_pad_ms: int = 200  # Less pre-context = smaller audio buffer = faster inference
     partial_interval_ms: int = 400  # Re-transcribe partial audio every N ms (0 = disabled)
     # Espacement progressif des passes partielles à mesure que le tampon grandit :

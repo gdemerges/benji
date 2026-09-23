@@ -625,3 +625,31 @@ def test_apprendre_un_terme_deja_connu_ne_recompile_pas_pour_rien(monkeypatch, t
     t, _ = _make(monkeypatch, [[("x", 0.0, 0.1)]])
 
     assert t.learn_term("datadog") is False
+
+
+# --- contexte après une coupure forcée ---------------------------------------
+
+
+def test_drop_context_words_by_midpoint():
+    from benji.stt.transcriber import drop_context_words
+
+    words = [
+        {"text": "fin", "start": 0.2, "end": 0.6},
+        {"text": ",", "start": None, "end": None},  # suit le mot d'avant
+        {"text": "à", "start": 0.9, "end": 1.2},     # milieu à 1,05 → gardé
+        {"text": "cheval", "start": 1.2, "end": 1.6},
+    ]
+    assert [w["text"] for w in drop_context_words(words, 1.0)] == ["à", "cheval"]
+    assert drop_context_words(words, 0.0) == words
+
+
+def test_final_with_context_keeps_only_its_own_words(monkeypatch):
+    t, backend = _make(monkeypatch, [[
+        ("déjà", 0.1, 0.4), ("dit", 0.5, 0.8),   # dans la seconde de contexte
+        ("la", 1.1, 1.3), ("suite", 1.4, 1.8),
+    ]])
+    t._run_segment(_audio(3.0), True, context_s=1.0)
+    finals = [e for e in _drain(t.display_queue) if e.get("type") == "final_text"]
+    assert [f["text"] for f in finals] == ["La suite"]
+    # Le moteur a bien reçu le tampon complet, contexte compris.
+    assert backend.calls == [3 * SR]

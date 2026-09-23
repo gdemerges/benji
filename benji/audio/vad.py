@@ -15,6 +15,8 @@ SILERO_ONNX_URL = "https://github.com/snakers4/silero-vad/raw/master/src/silero_
 SILERO_ONNX_SHA256 = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
 _ALLOWED_HOSTS = {"github.com", "raw.githubusercontent.com", "objects.githubusercontent.com"}
 _MAX_REDIRECTS = 3
+# Largeur (en morceaux de 32 ms) du lissage de confiance avant une coupure forcée.
+_CUT_SMOOTHING_CHUNKS = 3
 
 
 class SileroVADOnnx:
@@ -128,6 +130,12 @@ class VADProcessor:
         # State
         self.is_speaking = False
         self.speech_buffer: list[np.ndarray] = []
+        # Confiance VAD de chaque morceau de `speech_buffer`, au même indice :
+        # c'est là qu'une coupure forcée cherche le moment le plus calme.
+        self._speech_conf: list[float] = []
+        # Queue du segment précédent, à décoder devant le suivant quand une
+        # coupure forcée a tranché une parole continue (cf. `_cut_long_segment`).
+        self._context: np.ndarray | None = None
         self.silence_chunks = 0
         self.pre_speech_buffer: list[np.ndarray] = []
         self.samples_since_partial = 0
@@ -164,21 +172,30 @@ class VADProcessor:
 
         chunk_ms = self._chunk_duration_ms(chunk)
         threshold = self._effective_threshold()
+        # Hystérésis : une fois la parole ouverte, il faut descendre nettement
+        # sous le seuil pour la clore — sinon les syllabes faibles d'une fin de
+        # phrase comptent comme du silence (cf. VADConfig.speech_end_hysteresis).
+        if self.is_speaking:
+            threshold = max(0.05, threshold - self.config.speech_end_hysteresis)
 
         if confidence >= threshold:
             if not self.is_speaking:
                 self.is_speaking = True
                 self.speech_buffer = list(self.pre_speech_buffer)
+                # Le pré-roll n'est jamais candidat à une coupure forcée.
+                self._speech_conf = [1.0] * len(self.speech_buffer)
                 self.samples_since_partial = 0
                 log.debug("Speech started")
                 if self.display_queue:
                     self.display_queue.put({"type": "vad_status", "speaking": True})
             self.speech_buffer.append(chunk)
+            self._speech_conf.append(confidence)
             self.samples_since_partial += len(chunk)
             self.silence_chunks = 0
         else:
             if self.is_speaking:
                 self.speech_buffer.append(chunk)
+                self._speech_conf.append(confidence)
                 self.samples_since_partial += len(chunk)
                 self.silence_chunks += 1
                 silence_ms = self.silence_chunks * chunk_ms
@@ -195,10 +212,10 @@ class VADProcessor:
                     self.pre_speech_buffer.pop(0)
                 return
 
-        # Force flush long utterances as final
+        # Énoncé trop long : on le coupe, mais au moment le plus calme.
         total_samples = sum(len(c) for c in self.speech_buffer)
         if total_samples / self.sample_rate >= self.config.max_speech_duration_s:
-            self._flush_segment(is_final=True)
+            self._cut_long_segment(chunk_ms)
             return
 
         # Incremental partial during ongoing speech. A partial re-transcribes the
@@ -213,6 +230,21 @@ class VADProcessor:
             if self.samples_since_partial >= dynamic_interval:
                 self._emit_partial()
 
+    def _message(self, audio: np.ndarray, is_final: bool) -> dict:
+        """Message pour `transcribe_queue`, contexte éventuel placé devant.
+
+        `context_s` dit au transcripteur combien de secondes de tête ne sont là
+        que pour le contexte : les mots qui y tombent sont déjà dans le segment
+        précédent.
+        """
+        if self._context is None or len(self._context) == 0:
+            return {"audio": audio, "is_final": is_final}
+        return {
+            "audio": np.concatenate([self._context, audio]),
+            "is_final": is_final,
+            "context_s": len(self._context) / self.sample_rate,
+        }
+
     def _emit_partial(self):
         if not self.speech_buffer:
             return
@@ -222,16 +254,59 @@ class VADProcessor:
             return
         self.samples_since_partial = 0
         try:
-            self.transcribe_queue.put(
-                {"audio": audio, "is_final": False}, block=False
-            )
+            self.transcribe_queue.put(self._message(audio, is_final=False), block=False)
         except Full:
             # Transcriber is busy; it'll catch up on next partial or final
             if self.stats is not None:
                 self.stats.record_drop("partial_skipped")
 
-    def _flush_segment(self, is_final: bool = True):
-        audio = np.concatenate(self.speech_buffer) if self.speech_buffer else np.array([], dtype=np.float32)
+    def _cut_long_segment(self, chunk_ms: float) -> None:
+        """Coupe un énoncé trop long au morceau le plus calme de sa fin.
+
+        Couper net à `max_speech_duration_s` tranchait un mot en deux, que
+        chaque moitié décodait de travers. On cherche plutôt, dans les
+        `cut_search_ms` dernières millisecondes, le morceau de confiance VAD
+        minimale et d'énergie la plus basse — une respiration, une frontière de
+        mot — et on coupe juste après. Ce qui suit n'est pas perdu : il ouvre le tampon suivant, et la
+        parole reste ouverte (ni remise à zéro du modèle, ni `vad_status`).
+        """
+        n = len(self.speech_buffer)
+        search = max(1, int(self.config.cut_search_ms / chunk_ms))
+        lo = max(0, n - search)
+        # Score de « calme » par morceau : la confiance VAD, plus l'énergie
+        # relative. La confiance seule ne suffit pas — sur une parole continue
+        # Silero sature à 1,0 sur toute la fenêtre, et l'argmin tombait sur le
+        # premier morceau venu, en plein mot ; entre deux mots, l'énergie baisse
+        # même quand la confiance ne bouge pas.
+        rms = np.array([np.sqrt(np.mean(c * c)) for c in self.speech_buffer[lo:]])
+        score = np.asarray(self._speech_conf[lo:]) + rms / max(float(rms.max()), 1e-9)
+        # Minimum d'une moyenne glissante, pas d'un morceau isolé : l'occlusion
+        # d'un « p » ou d'un « t » fait chuter le score le temps d'un morceau, en
+        # plein mot (« la pé|riode » décodé « la page »). Une vraie frontière
+        # dure plus longtemps.
+        k = _CUT_SMOOTHING_CHUNKS
+        if len(score) >= k:
+            smoothed = np.convolve(score, np.ones(k) / k, mode="valid")
+            cut = lo + int(np.argmin(smoothed)) + k // 2
+        else:
+            cut = lo + int(np.argmin(score))
+
+        head = np.concatenate(self.speech_buffer[:cut + 1])
+        tail = self.speech_buffer[cut + 1:]
+        self._enqueue_final(head, is_final=True)
+
+        # La parole continue : le segment suivant sera décodé avec la fin de
+        # celui-ci devant lui, pour que son premier mot ait du contexte.
+        ctx = int(self.config.cut_context_ms / 1000 * self.sample_rate)
+        self._context = head[-ctx:] if ctx > 0 else None
+
+        self.speech_buffer = tail
+        self._speech_conf = self._speech_conf[cut + 1:]
+        self.samples_since_partial = sum(len(c) for c in tail)
+        # Le silence en cours, s'il y en a un, se trouve dans ce qui reste.
+        self.silence_chunks = min(self.silence_chunks, len(tail))
+
+    def _enqueue_final(self, audio: np.ndarray, is_final: bool) -> None:
         min_samples = int(self.config.min_speech_duration_ms / 1000 * self.sample_rate)
 
         if len(audio) >= min_samples:
@@ -241,9 +316,7 @@ class VADProcessor:
             # catch up; if it's still saturated after the timeout, log loudly
             # and count the drop so a stalled pipeline is visible to the user.
             try:
-                self.transcribe_queue.put(
-                    {"audio": audio, "is_final": is_final}, timeout=2.0
-                )
+                self.transcribe_queue.put(self._message(audio, is_final), timeout=2.0)
             except Full:
                 log.warning(
                     "transcribe_queue full after 2s; dropping final segment (%.1fs). "
@@ -256,6 +329,14 @@ class VADProcessor:
                     # Clear any streamed partial words from the dropped segment.
                     self.display_queue.put({"type": "final_text", "text": "", "drop": True})
 
+    def _flush_segment(self, is_final: bool = True):
+        audio = np.concatenate(self.speech_buffer) if self.speech_buffer else np.array([], dtype=np.float32)
+        self._enqueue_final(audio, is_final)
+
+        # Vraie pause : le prochain énoncé n'a pas besoin de contexte, qui ne
+        # serait que du silence.
+        self._context = None
+        self._speech_conf = []
         self.speech_buffer = []
         self.silence_chunks = 0
         self.is_speaking = False
