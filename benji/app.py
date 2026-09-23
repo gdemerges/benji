@@ -38,6 +38,7 @@ from benji.launch_mode import launch_mode
 from benji.llm.providers import build_summary_provider
 from benji.llm.summary_worker import SummaryWorker
 from benji.queues import NotifyingQueue
+from benji.speaker_intro import detect_self_name
 from benji.stats import SessionStats
 from benji.stt.transcriber import Transcriber
 from benji.ui.display_bus import DisplayBus
@@ -448,6 +449,40 @@ class BenjiApplication:
         elif self.overlay is not None:
             self.overlay.set_speaker_name(label, name)
 
+    def _on_display_event(self, item) -> None:
+        """Quelqu'un se présente : son étiquette devient son prénom.
+
+        « Bonjour, je m'appelle Guillaume » nomme le locuteur de la phrase,
+        comme un clic sur « A » l'aurait fait — Live, sous-titres et réunion.
+        Un nom déjà posé n'est **jamais** remplacé : ni celui qu'on a tapé, ni
+        un premier nom détecté (une réplique mal attribuée par la diarisation
+        ne doit pas rebaptiser quelqu'un en pleine réunion).
+        """
+        if not isinstance(item, dict) or item.get("type") != "final_text":
+            return
+        if item.get("drop") or item.get("corrected"):
+            return
+        label = item.get("speaker")
+        if not label or self.overlay is None or self.overlay.speaker_name(label):
+            return
+        name = detect_self_name(item.get("text", ""))
+        if name is None:
+            return
+        # Ni le nom ni le texte dans le log : c'est du contenu de réunion.
+        log.info("Locuteur nommé d'après sa présentation")
+        if self.main_window is not None:
+            self.main_window.live_tab.set_speaker_name(label, name)  # relaie à l'overlay
+        else:
+            self.overlay.set_speaker_name(label, name)
+        # Écouter n'est pas garder : le nom ne va sur disque qu'avec l'accord.
+        if self._is_saving():
+            from benji import meetings
+
+            try:
+                meetings.name_speaker(label, name)
+            except Exception:
+                log.exception("Nom de locuteur non persisté")
+
     def _on_new_meeting(self) -> None:
         """Nouvelle réunion : l'accord est à redemander, le bandeau revient.
 
@@ -514,6 +549,7 @@ class BenjiApplication:
         self.history_window.speaker_named.connect(self._on_speaker_named_in_history)
 
         if self.mode != "window":
+            self.bus.event.connect(self._on_display_event)
             return
 
         self.summary_worker = SummaryWorker(provider=build_summary_provider(self.cfg.llm))
@@ -541,6 +577,8 @@ class BenjiApplication:
         self.overlay._on_click = lambda: self.controller.show_window()
         # Un locuteur nommé dans le Live l'est aussi dans les sous-titres.
         self.main_window.live_tab.speaker_named.connect(self.overlay.set_speaker_name)
+        # Après la MainWindow : la ligne est déjà au Live quand on la nomme.
+        self.bus.event.connect(self._on_display_event)
 
     def _build_tray_and_shortcuts(self) -> None:
         show_main = (lambda: self.controller.show_window()) if self.controller else None

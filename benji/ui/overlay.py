@@ -476,6 +476,10 @@ class SubtitleOverlay(QWidget):
             self._render_final_lines()
             self._reposition()
 
+    def speaker_name(self, label: str) -> str | None:
+        """Le nom donné à une étiquette pendant cette réunion, s'il y en a un."""
+        return self._speaker_names.get(label)
+
     def clear_speaker_names(self) -> None:
         """Nouvelle réunion : les étiquettes ne désignent plus les mêmes gens."""
         self._speaker_names.clear()
