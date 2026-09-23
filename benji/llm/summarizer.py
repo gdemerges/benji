@@ -36,6 +36,10 @@ def build_user_prompt(transcription_text: str) -> str:
         "- **Sujets abordés** : les thèmes principaux\n"
         "- **Points clés** : les informations importantes\n"
         "- **Décisions / Actions** : les décisions prises ou actions à faire (si applicable)\n\n"
+        "Chaque réplique peut être précédée de son locuteur (« Marie : … ») ; "
+        "une lettre seule (« A : … ») est un locuteur anonyme. Attribue les "
+        "propositions, décisions et actions à la personne concernée quand "
+        "c'est clair.\n\n"
         "Sois factuel et concis. "
         "Si la transcription est trop courte pour être résumée, dis-le simplement.\n\n"
         "Transcription :\n<transcription>\n"
@@ -44,19 +48,51 @@ def build_user_prompt(transcription_text: str) -> str:
     )
 
 
+def with_speaker_names(entries: list[dict]) -> list[dict]:
+    """Copies des entrées où l'étiquette du locuteur est remplacée par son nom.
+
+    Les noms vivent dans le registre des réunions (`benji/meetings.py`), un jeu
+    par réunion : on les lit une fois par réunion présente dans `entries`. Un
+    registre illisible n'empêche pas de résumer — on garde les étiquettes.
+    """
+    from benji import meetings
+
+    names_by_meeting: dict[str, dict[str, str]] = {}
+    out = []
+    for entry in entries:
+        speaker, meeting_id = entry.get("speaker"), entry.get("meeting")
+        if speaker and meeting_id:
+            if meeting_id not in names_by_meeting:
+                try:
+                    names_by_meeting[meeting_id] = meetings.speaker_names(meeting_id)
+                except Exception:
+                    log.exception("Noms de locuteurs illisibles — étiquettes gardées")
+                    names_by_meeting[meeting_id] = {}
+            name = names_by_meeting[meeting_id].get(speaker)
+            if name:
+                entry = {**entry, "speaker": name}
+        out.append(entry)
+    return out
+
+
 def prepare_transcription(entries: list[dict]) -> str | None:
     """Concatène les utterances et écarte les sessions trop courtes.
 
+    Chaque réplique est précédée de son locuteur — nommé si l'utilisateur l'a
+    fait — pour que le résumé puisse dire *qui* a proposé ou décidé quoi.
     Retourne le texte prêt à résumer, ou None si rien d'exploitable.
     """
     if not entries:
         log.info("Aucune transcription à résumer.")
         return None
-    transcription_text = "\n".join(e["text"] for e in entries)
-    if len(transcription_text.strip()) < 50:
+    # Le seuil porte sur ce qui a été dit, pas sur les préfixes de locuteur.
+    if len("\n".join(e["text"] for e in entries).strip()) < 50:
         log.info("Transcription trop courte pour être résumée.")
         return None
-    return transcription_text
+    return "\n".join(
+        f"{e['speaker']} : {e['text']}" if e.get("speaker") else e["text"]
+        for e in with_speaker_names(entries)
+    )
 
 
 def _build_prompt(tokenizer, transcription_text: str) -> str:

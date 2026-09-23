@@ -37,6 +37,13 @@ _HEADER_PREFIX = "__header__:"
 _PENDING_PREFIX = "__pending__:"
 
 
+# `strftime("%A")` suit la locale du process — de l'anglais, le plus souvent,
+# sur une app qui parle français partout ailleurs.
+_JOURS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
+_MOIS = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+         "août", "septembre", "octobre", "novembre", "décembre")
+
+
 def _default_dir() -> Path:
     from benji.paths import user_path
 
@@ -65,7 +72,28 @@ class SummariesTab(QWidget):
         self.preview = QTextBrowser()
         self.preview.setOpenExternalLinks(True)
         self.preview.setFrameShape(QTextBrowser.Shape.NoFrame)
-        self.preview.setPlaceholderText("Cliquez sur un résumé pour le voir")
+        self.preview.setPlaceholderText("Choisissez un résumé dans la liste.")
+
+        # État vide : une colonne blanche et trois boutons grisés ne disaient ni
+        # ce qu'est un résumé ni comment en obtenir un.
+        self.empty = QWidget()
+        empty_col = QVBoxLayout(self.empty)
+        empty_col.addStretch(1)
+        self.empty_title = QLabel("Aucun résumé pour l'instant")
+        self.empty_body = QLabel(
+            "« Résumer », en haut de la fenêtre, rédige le résumé de la réunion "
+            "en cours : sujets, décisions, et qui s'est engagé à quoi. "
+            "Il s'affichera ici."
+        )
+        self.empty_body.setWordWrap(True)
+        # Largeur fixe, pas maximale : centré dans la disposition, un libellé à
+        # retours à la ligne reçoit sinon sa largeur « idéale » et Qt en calcule
+        # mal la hauteur — le paragraphe était tronqué après deux lignes.
+        self.empty_body.setFixedWidth(380)
+        for label in (self.empty_title, self.empty_body):
+            label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            empty_col.addWidget(label, 0, Qt.AlignmentFlag.AlignHCenter)
+        empty_col.addStretch(2)
 
         self.copy_btn = QPushButton("Copier")
         # Un résumé n'a d'intérêt que s'il peut partir : il était jusqu'ici
@@ -100,6 +128,7 @@ class SummariesTab(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 0, 8, 8)
         layout.addWidget(self.splitter)
+        layout.addWidget(self.empty)
 
     def _wire(self) -> None:
         self.list_widget.currentItemChanged.connect(self._on_selection)
@@ -113,7 +142,8 @@ class SummariesTab(QWidget):
 
     def apply_theme(self) -> None:
         t = current_theme()
-        sel_bg = t.accent_alpha(18)
+        # Sélection à l'encre : le rouge ne signifie que le direct.
+        sel_bg = t.ink_alpha(8)
         hover_bg = t.label_alpha(5)
         separator = t.separator
         self.setStyleSheet(f"""
@@ -152,6 +182,16 @@ class SummariesTab(QWidget):
         self.reveal_btn.setIcon(folder_arrow_icon(label_hex))
         self._apply_preview_css()
         self._refresh_item_widget_themes()
+        self.empty_title.setStyleSheet(
+            f"font-family: {FONT_UI}; font-size: 15px; font-weight: 600; "
+            f"color: rgba({t.ink.red()},{t.ink.green()},{t.ink.blue()},{t.ink.alpha()}); "
+            "background: transparent;"
+        )
+        self.empty_body.setStyleSheet(
+            f"font-family: {FONT_UI}; font-size: 13px; "
+            f"color: rgba({t.ink_muted.red()},{t.ink_muted.green()},{t.ink_muted.blue()},{t.ink_muted.alpha()}); "
+            "background: transparent; padding-top: 6px;"
+        )
 
     def _apply_preview_css(self) -> None:
         """Même feuille que la fenêtre Résumé en direct : une seule voix."""
@@ -196,6 +236,13 @@ class SummariesTab(QWidget):
                 if self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) == prev_path:
                     self.list_widget.setCurrentRow(i)
                     break
+        self._sync_empty()
+
+    def _sync_empty(self) -> None:
+        """Montre l'état vide tant qu'il n'y a ni résumé ni rédaction en cours."""
+        empty = self.list_widget.count() == 0
+        self.empty.setVisible(empty)
+        self.splitter.setVisible(not empty)
 
     def _add_header(self, label: str) -> None:
         item = QListWidgetItem()
@@ -203,10 +250,9 @@ class SummariesTab(QWidget):
         item.setFlags(Qt.ItemFlag.NoItemFlags)
         item.setSizeHint(QSize(0, 28))
         t = current_theme()
-        header = QLabel(label.upper())
+        header = QLabel(label)
         header.setStyleSheet(
-            f"font-family: {FONT_UI}; font-size: 10px; font-weight: 600; "
-            f"letter-spacing: 0.6px; "
+            f"font-family: {FONT_UI}; font-size: 12px; font-weight: 600; "
             f"color: rgba({t.tertiary_label.red()},{t.tertiary_label.green()},{t.tertiary_label.blue()},{t.tertiary_label.alpha()}); "
             "padding: 12px 14px 4px 14px; background: transparent;"
         )
@@ -237,8 +283,8 @@ class SummariesTab(QWidget):
         if d == today - timedelta(days=1):
             return "Hier"
         if (today - d).days < 7:
-            return d.strftime("%A")
-        return d.strftime("%d %B %Y")
+            return _JOURS[d.weekday()].capitalize()
+        return f"{d.day} {_MOIS[d.month - 1]} {d.year}"
 
     @staticmethod
     def _first_line(p: Path) -> str:
@@ -346,6 +392,7 @@ class SummariesTab(QWidget):
         self.list_widget.insertItem(insert_at, item)
         self.list_widget.setItemWidget(item, widget)
         self._pending_items[summary_id] = item
+        self._sync_empty()
         self.list_widget.setCurrentRow(insert_at)
         self.preview.clear()
         self._pending_text = ""

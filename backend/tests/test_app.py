@@ -103,3 +103,15 @@ def test_transcribe_rejects_unauthenticated(client):
         with pytest.raises(WebSocketDisconnect) as exc:
             ws.receive_json()
     assert exc.value.code == 4401
+
+
+def test_summary_prompt_carries_speakers():
+    from app import prompts
+
+    text = prompts.prepare_transcription([
+        {"text": LONG_ENTRIES[0]["text"], "speaker": "Marie"},
+        {"text": "D'accord.", "speaker": None},
+    ])
+    assert text.splitlines()[0].startswith("Marie : Bonjour")
+    assert text.splitlines()[1] == "D'accord."
+    assert "locuteur" in prompts.build_user_prompt(text)

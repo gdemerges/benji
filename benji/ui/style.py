@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication
 from PySide6.QtWidgets import QWidget
 
-from benji.config import IS_MACOS
+from benji.config import IS_MACOS, IS_WINDOWS
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +34,9 @@ def vibrancy_enabled() -> bool:
 #    qu'une chose : « on est en train de prendre au mot, maintenant ». Il n'est
 #    donc jamais utilisé pour une action — un bouton principal rouge se lirait
 #    comme un danger sur macOS. L'action principale est un aplat d'encre.
-# 2. **Le papier est froid.** Un gris très légèrement bleuté, pas un crème :
-#    l'écran est un instrument de précision, pas une page imprimée.
+# 2. **Le papier est de la pierre.** Un gris neutre à peine chaud : ni le
+#    gris-bleu des Réglages Système (que Benji refuse d'imiter), ni un crème
+#    de papeterie. Le document posé dessus, lui, est blanc.
 #
 # Les couleurs ne sont plus dérivées de la couleur d'accentuation du système :
 # c'est précisément ce qui faisait ressembler Benji à une boîte de dialogue.
@@ -44,15 +45,15 @@ def vibrancy_enabled() -> bool:
 # `sheet` la feuille de lecture posée dessus. C'est le relief, pas la teinte, qui
 # fait qu'une surface de lecture paraît récente.
 _LIGHT = {
-    "paper": QColor("#E7EAF0"),
+    "paper": QColor("#EDECE9"),
     "sheet": QColor("#FFFFFF"),
-    "ink": QColor("#16181D"),
+    "ink": QColor("#1D1C1A"),
     "record": QColor("#E5484D"),
 }
 _DARK = {
-    "paper": QColor("#0A0C0F"),
-    "sheet": QColor("#191C21"),
-    "ink": QColor("#E9ECF1"),
+    "paper": QColor("#0F0F10"),
+    "sheet": QColor("#1A1A1C"),
+    "ink": QColor("#ECEAE6"),
     "record": QColor("#FF5C61"),
 }
 
@@ -136,6 +137,7 @@ def _alpha(color: QColor, pct: int) -> QColor:
 
 
 def current_theme() -> Theme:
+    ensure_system_fonts()
     return theme_for(_is_dark())
 
 
@@ -216,10 +218,57 @@ def speaker_color(label: str, on_dark: bool | None = None) -> QColor:
 # le temps est en SF Mono, tabulaire, pour que les ticks de la ligne de temps
 # s'alignent au pixel. Voir d'un coup d'œil ce qui a été *dit* de ce que l'app
 # *dit* est la moitié de la lisibilité d'un transcript.
-FONT_UI = '"-apple-system", "SF Pro Text", system-ui, sans-serif'
-FONT_DISPLAY = '"-apple-system", "SF Pro Display", "SF Pro Text", system-ui, sans-serif'
-FONT_READING = '"New York", "Iowan Old Style", Charter, Georgia, serif'
-FONT_MONO = '"SF Mono", Menlo, monospace'
+#
+# **Piège : Qt ne voit ni New York ni SF Mono.** macOS les cache à l'énumération
+# des familles ; demandées par leur nom, elles retombent en silence sur Charter
+# et Menlo — deux des trois voix n'étaient donc pas celles qu'on croyait. Les
+# fichiers sont pourtant dans le système : `ensure_system_fonts()` les enregistre
+# (familles `.New York`, `.SF NS Mono`). Rien n'est embarqué dans l'app. Hors
+# macOS, les piles retombent sur des équivalents.
+#
+# Pas de famille générique (`serif`, `sans-serif`) en fin de pile : Qt les prend
+# pour des noms de famille, ne les trouve pas, et repeuple toute sa table
+# d'alias pour rien (~40 ms, avertissement au démarrage).
+# Même raison pour des piles propres à chaque OS : une famille absente de la pile
+# (« Segoe UI » sur un Mac) déclenche la même recherche.
+if IS_MACOS:
+    FONT_UI = '".AppleSystemUIFont"'
+    FONT_READING = '".New York", Charter, Georgia'
+    FONT_MONO = '".SF NS Mono", Menlo'
+elif IS_WINDOWS:
+    FONT_UI = '"Segoe UI"'
+    FONT_READING = 'Georgia, Cambria'
+    FONT_MONO = 'Consolas'
+else:
+    FONT_UI = '"Cantarell", "DejaVu Sans"'
+    FONT_READING = '"DejaVu Serif"'
+    FONT_MONO = '"DejaVu Sans Mono"'
+FONT_DISPLAY = FONT_UI
+
+_SYSTEM_FONT_FILES = (
+    "/System/Library/Fonts/NewYork.ttf",
+    "/System/Library/Fonts/NewYorkItalic.ttf",
+    "/System/Library/Fonts/SFNSMono.ttf",
+)
+_fonts_installed = False
+
+
+def ensure_system_fonts() -> None:
+    """Enregistre New York et SF Mono auprès de Qt, une fois par process.
+
+    Idempotent et sans effet avant la création du `QGuiApplication` (Qt refuse
+    d'enregistrer une fonte sans elle) : appelé depuis `current_theme()`, que
+    tout widget lit avant de se composer.
+    """
+    global _fonts_installed
+    if _fonts_installed or QGuiApplication.instance() is None:
+        return
+    _fonts_installed = True
+    if not IS_MACOS:
+        return
+    for path in _SYSTEM_FONT_FILES:
+        if os.path.exists(path) and QFontDatabase.addApplicationFont(path) < 0:
+            log.warning("Fonte système non chargée : %s", os.path.basename(path))
 
 
 def reading_font(size: int = 11) -> QFont:
@@ -233,7 +282,8 @@ def reading_font(size: int = 11) -> QFont:
     `size` est en **points** (unité de QFont), pas en pixels comme le reste des
     helpers QSS : 11 pt tombe à peu près sur les 15 px du transcript.
     """
-    for family in ("New York", "Iowan Old Style", "Charter", "Georgia"):
+    ensure_system_fonts()
+    for family in (".New York", "Charter", "Georgia"):
         if family in QFontDatabase.families():
             return QFont(family, size)
     font = QFont()
@@ -271,6 +321,21 @@ def reading_qss(theme: Theme, size: int = 15, color: QColor | None = None) -> st
         f"font-family: {FONT_READING}; font-size: {size}px; "
         f"line-height: 1.7; color: {_rgba(color or theme.ink)}; background: transparent;"
     )
+
+
+# Interligne des paroles. `line-height` en QSS est ignoré par `QLabel` : il ne
+# prend effet que dans le texte riche, d'où `reading_html`. Un serif veut plus
+# d'air qu'un sans-serif — à 1,0 les lignes de New York se touchaient presque.
+# Attention : le pourcentage de Qt s'applique à la hauteur de ligne *native* de
+# la fonte, déjà munie d'un interligne ; 148 donnait ~190 % du corps.
+READING_LEADING = 118
+
+
+def reading_html(text: str) -> str:
+    """Texte transcrit, échappé et composé avec l'interligne de lecture."""
+    from html import escape
+
+    return f'<div style="line-height:{READING_LEADING}%;">{escape(text)}</div>'
 
 
 def meta_qss(theme: Theme, size: int = 11) -> str:
@@ -330,7 +395,8 @@ def primary_button_qss(theme: Theme) -> str:
     QPushButton:hover {{ background-color: {_rgba(theme.ink)}; }}
     QPushButton:pressed {{ background-color: {_rgba(theme.ink_alpha(78))}; }}
     QPushButton:disabled {{
-        background-color: {_rgba(theme.ink_alpha(10))};
+        background-color: transparent;
+        border: 1px solid {_rgba(theme.spine)};
         color: {_rgba(theme.ink_faint)};
     }}"""
 

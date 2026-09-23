@@ -19,8 +19,14 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
-from benji.ui.style import current_theme, reading_qss
-from benji.ui.widgets.chat_item import _GUTTER_WIDTH, _SPINE_X, _TEXT_X
+from benji.ui.style import READING_LEADING, current_theme, reading_qss
+from benji.ui.widgets.chat_item import (
+    _GUTTER_WIDTH,
+    _READING_SIZE,
+    _SPINE_X,
+    _TEXT_MAX_WIDTH,
+    _TEXT_X,
+)
 from benji.ui.widgets.waveform import WaveformDot
 
 _DOT_RADIUS = 3.5
@@ -35,6 +41,7 @@ class PartialBubble(QWidget):
         self.text_label = QLabel("")
         self.text_label.setWordWrap(True)
         self.text_label.setTextFormat(Qt.TextFormat.RichText)
+        self.text_label.setMaximumWidth(_TEXT_MAX_WIDTH)
 
         # La ligne en cours occupe exactement la grille du transcript : l'onde
         # prend la place de l'heure dans la gouttière — pour la ligne vivante, le
@@ -88,13 +95,14 @@ class PartialBubble(QWidget):
         t = current_theme()
         cursor = f"rgba({t.record.red()},{t.record.green()},{t.record.blue()},255)"
         self.text_label.setText(
-            f'{escape(self._text)}<span style="color:{cursor};"> ▏</span>'
+            f'<div style="line-height:{READING_LEADING}%;">{escape(self._text)}'
+            f'<span style="color:{cursor};"> ▏</span></div>'
         )
 
     def apply_theme(self) -> None:
         t = current_theme()
         self.wave.set_color(t.record)
         # Même face que le transcript, en gris : dit, pas encore acquis.
-        self.text_label.setStyleSheet(reading_qss(t, color=t.ink_muted))
+        self.text_label.setStyleSheet(reading_qss(t, size=_READING_SIZE, color=t.ink_muted))
         self._render()
         self.update()

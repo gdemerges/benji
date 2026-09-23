@@ -35,7 +35,6 @@ from benji.ui.style import (
 )
 from benji.ui.summaries_tab import SummariesTab
 from benji.ui.widgets.icons import (
-    doc_text_icon,
     mic_icon,
     mic_slash_icon,
     minimize_icon,
@@ -274,10 +273,10 @@ class MainWindow(QMainWindow):
     def _apply_toolbar_button_styles(self) -> None:
         t = current_theme()
         ink_hex = f"#{t.ink.red():02x}{t.ink.green():02x}{t.ink.blue():02x}"
-        on_ink = "#ffffff" if not t.is_dark else f"#{t.paper.red():02x}{t.paper.green():02x}{t.paper.blue():02x}"
 
         # Action principale : aplat d'encre (le rouge est réservé au direct).
-        self.summarize_btn.setIcon(doc_text_icon(on_ink))
+        # Pas d'icône : désactivé, l'icône (encre sur encre) disparaissait mais
+        # gardait sa place et décentrait le mot. Le mot suffit.
         self.summarize_btn.setStyleSheet(
             primary_button_qss(t).replace("QPushButton", "QPushButton#summarize_btn")
         )

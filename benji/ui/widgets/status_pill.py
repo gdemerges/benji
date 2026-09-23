@@ -29,16 +29,17 @@ class StatusPill(QWidget):
 
         self.wave = WaveformDot(bar_width=2, gap=2, height=12)
         self.status_label = QLabel("En attente")
-        self.sep_label = QLabel(" · ")
         self.timer_label = QLabel("00:00")
 
+        # Titre et durée séparés par de l'espace, pas par un « · » : deux voix
+        # (SF Pro, SF Mono) les distinguent déjà.
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 4, 12, 4)
-        layout.setSpacing(6)
+        layout.setContentsMargins(4, 4, 12, 4)
+        layout.setSpacing(0)
         layout.addWidget(self.wave)
-        layout.addSpacing(2)
+        layout.addSpacing(10)
         layout.addWidget(self.status_label)
-        layout.addWidget(self.sep_label)
+        layout.addSpacing(12)
         layout.addWidget(self.timer_label)
 
         self._tick_timer = QTimer(self)
@@ -51,12 +52,9 @@ class StatusPill(QWidget):
 
     def apply_theme(self) -> None:
         t = current_theme()
-        bg = t.label_alpha(6) if t.is_dark else t.label_alpha(5)
+        # Plus de fond de pastille : posé sur le plan de travail, le titre de
+        # la réunion n'a pas besoin d'une boîte pour se lire comme un titre.
         self.setStyleSheet(f"""
-            StatusPill {{
-                background-color: rgba({bg.red()},{bg.green()},{bg.blue()},{bg.alpha()});
-                border-radius: 11px;
-            }}
             QLabel {{
                 font-family: {FONT_UI};
                 font-size: 12px;
@@ -65,7 +63,7 @@ class StatusPill(QWidget):
             }}
         """)
         self.status_label.setStyleSheet(
-            f"font-family: {FONT_UI}; font-size: 12px; font-weight: 600; "
+            f"font-family: {FONT_UI}; font-size: 13px; font-weight: 600; "
             f"color: rgba({t.ink.red()},{t.ink.green()},{t.ink.blue()},{t.ink.alpha()}); "
             "background: transparent;"
         )

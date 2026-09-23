@@ -65,7 +65,7 @@ def test_correction_replaces_line_without_duplicate(qtbot):
     tab.on_event(_final("Texte corrigé.", "A", 7, corrected=True))
     items = _items(tab)
     assert len(items) == 1
-    assert items[0].text_label.text() == "Texte corrigé."
+    assert "Texte corrigé." in items[0].text_label.text()
 
 
 def test_stale_correction_is_ignored(qtbot):
@@ -75,7 +75,7 @@ def test_stale_correction_is_ignored(qtbot):
     tab.on_event(_final("Correction orpheline.", "A", 999, corrected=True))
     items = _items(tab)
     assert len(items) == 1
-    assert items[0].text_label.text() == "Phrase affichée."
+    assert "Phrase affichée." in items[0].text_label.text()
 
 
 def test_vad_animates_empty_state_wave(qtbot):
@@ -403,7 +403,7 @@ def test_nommer_un_locuteur_change_laffichage_pas_letiquette(qtbot):
 
     item = _items(tab)[0]
     assert item._speaker == "SPEAKER_01"
-    assert item.speaker_label.text() == "ALICE"
+    assert item.speaker_label.text() == "Alice"
 
 
 def test_le_nom_vaut_aussi_pour_les_phrases_suivantes(qtbot):
@@ -415,7 +415,7 @@ def test_le_nom_vaut_aussi_pour_les_phrases_suivantes(qtbot):
     tab.on_event(_final("Autre chose.", "SPEAKER_02", 2))
     tab.on_event(_final("Je reprends.", "SPEAKER_01", 3))
 
-    assert _items(tab)[-1].speaker_label.text() == "ALICE"
+    assert _items(tab)[-1].speaker_label.text() == "Alice"
 
 
 def test_apprendre_un_terme_corrige_la_ligne_deja_affichee(qtbot, monkeypatch, tmp_path):
@@ -447,3 +447,47 @@ def test_la_copie_utilise_le_nom_donne_pas_letiquette(qtbot):
 
     assert "Alice : Bonjour." in tab.transcript_text()
     assert "SPEAKER_01" not in tab.transcript_text()
+
+
+def test_nommer_un_locuteur_previent_lexterieur(qtbot):
+    """L'overlay s'abonne à ce signal : sans lui, les sous-titres garderaient « A »."""
+    tab = LiveTab()
+    qtbot.addWidget(tab)
+    tab.on_event(_final("Bonjour.", "A", 1))
+
+    with qtbot.waitSignal(tab.speaker_named) as blocker:
+        tab.set_speaker_name("A", "Alice")
+    assert blocker.args == ["A", "Alice"]
+
+
+def test_cliquer_sur_len_tete_propose_de_nommer(qtbot, monkeypatch):
+    """Nommer n'était accessible que par un clic droit que rien ne laissait deviner."""
+    from PySide6.QtCore import Qt
+
+    from benji.ui import live_tab as live_tab_mod
+
+    monkeypatch.setattr(live_tab_mod.QInputDialog, "getText",
+                        staticmethod(lambda *a, **kw: ("Alice", True)))
+    monkeypatch.setattr(live_tab_mod.meetings, "name_speaker", lambda *a, **kw: None)
+    tab = LiveTab()
+    qtbot.addWidget(tab)
+    tab.on_event(_final("Bonjour.", "A", 1))
+    item = _items(tab)[0]
+
+    qtbot.mouseClick(item.speaker_label, Qt.MouseButton.LeftButton)
+
+    assert item.speaker_label.text() == "Alice"
+
+
+def test_une_nouvelle_reunion_oublie_les_noms(qtbot):
+    tab = LiveTab()
+    qtbot.addWidget(tab)
+    tab.on_event(_final("Bonjour.", "A", 1))
+    tab.set_speaker_name("A", "Alice")
+
+    tab.clear_speaker_names()
+    tab.on_event(_final("Autre chose.", "B", 2))
+    tab.on_event(_final("Moi.", "A", 3))
+
+    assert _items(tab)[0].speaker_label.text() == "Alice"  # passé inchangé
+    assert _items(tab)[-1].speaker_label.text() == "A"     # « A » n'est plus Alice

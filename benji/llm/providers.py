@@ -152,7 +152,9 @@ class RemoteSummaryProvider:
                     "timestamp": e.get("timestamp"),
                     "speaker": e.get("speaker"),
                 }
-                for e in entries
+                # Les noms donnés aux locuteurs voyagent à la place des
+                # étiquettes : le serveur n'a pas accès au registre local.
+                for e in summarizer.with_speaker_names(entries)
             ],
             "model": self._model_alias,
         }

@@ -23,6 +23,10 @@ def build_user_prompt(transcription_text: str) -> str:
         "- **Sujets abordés** : les thèmes principaux\n"
         "- **Points clés** : les informations importantes\n"
         "- **Décisions / Actions** : les décisions prises ou actions à faire (si applicable)\n\n"
+        "Chaque réplique peut être précédée de son locuteur (« Marie : … ») ; "
+        "une lettre seule (« A : … ») est un locuteur anonyme. Attribue les "
+        "propositions, décisions et actions à la personne concernée quand "
+        "c'est clair.\n\n"
         "Sois factuel et concis. "
         "Si la transcription est trop courte pour être résumée, dis-le simplement.\n\n"
         "Transcription :\n<transcription>\n"
@@ -32,10 +36,15 @@ def build_user_prompt(transcription_text: str) -> str:
 
 
 def prepare_transcription(entries: list[dict]) -> str | None:
-    """Concatène les utterances ; None si rien d'exploitable (trop court)."""
+    """Concatène les utterances, chacune précédée de son locuteur s'il est
+    connu ; None si rien d'exploitable (trop court — le seuil porte sur le
+    texte dit, pas sur les préfixes)."""
     if not entries:
         return None
     text = "\n".join(e.get("text", "") for e in entries)
     if len(text.strip()) < MIN_TRANSCRIPTION_CHARS:
         return None
-    return text
+    return "\n".join(
+        f"{e['speaker']} : {e.get('text', '')}" if e.get("speaker") else e.get("text", "")
+        for e in entries
+    )

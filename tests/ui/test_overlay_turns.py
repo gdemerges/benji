@@ -152,3 +152,44 @@ def test_le_mode_remote_reste_servi_mot_a_mot(qtbot):
         w._update_word({"type": "word", "text": mot})
 
     assert w.label.text() == "bonjour le monde"
+
+
+def test_les_sous_titres_affichent_le_nom_donne(qtbot):
+    w = _overlay(qtbot)
+    w.set_speaker_name("A", "Alice")
+    w._update_word({"type": "segment_start"})
+    w._update_word(_final("Je pense que oui", "A"))
+
+    shown = w.label.text()
+    assert "Alice" in shown
+    assert ">A<" not in shown
+
+
+def test_nommer_repeint_la_replique_deja_a_lecran(qtbot):
+    w = _overlay(qtbot)
+    w._update_word({"type": "segment_start"})
+    w._update_word(_final("Je pense que oui", "A"))
+    color_before = w.label.text().split("color:")[1][:7]
+
+    w.set_speaker_name("A", "Alice")
+
+    assert "Alice" in w.label.text()
+    # La couleur suit l'étiquette, pas le nom : personne ne change de teinte.
+    assert w.label.text().split("color:")[1][:7] == color_before
+
+
+def test_le_nom_est_echappe(qtbot):
+    w = _overlay(qtbot)
+    w.set_speaker_name("A", "<b>Bob</b>")
+    w._update_word({"type": "segment_start"})
+    w._update_word(_final("Salut", "A"))
+    assert "&lt;b&gt;Bob" in w.label.text()
+
+
+def test_une_nouvelle_reunion_rend_les_etiquettes(qtbot):
+    w = _overlay(qtbot)
+    w.set_speaker_name("A", "Alice")
+    w.clear_speaker_names()
+    w._update_word({"type": "segment_start"})
+    w._update_word(_final("Salut", "A"))
+    assert "Alice" not in w.label.text()

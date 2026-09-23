@@ -14,13 +14,20 @@ information vraie plutôt qu'un ornement :
 
 La pastille ● devant le nom a disparu : la tige dit déjà la couleur, et deux
 marques pour la même information, c'est une de trop.
+
+**Mise en page de procès-verbal.** Le nom du locuteur a sa propre colonne, à
+gauche du texte, comme dans un compte rendu de séance : on lit *qui* en
+descendant la colonne, *quoi* en lisant la page. Il n'apparaît qu'au début d'une
+prise de parole, en casse normale et à taille de lecture — les petites
+capitales espacées de 10 px d'avant se faisaient écraser par le texte, et « B »
+seul y ressemblait à une coquille.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, Qt
+from PySide6.QtCore import QEasingCurve, QEvent, QPointF, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
@@ -30,18 +37,35 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from benji.ui.style import FONT_UI, current_theme, meta_qss, reading_qss, speaker_color
+from benji.ui.style import (
+    FONT_UI,
+    current_theme,
+    meta_qss,
+    reading_html,
+    reading_qss,
+    speaker_color,
+)
 
-# Gouttière de l'heure, puis la ligne de temps, puis la tige du locuteur.
+# Gouttière de l'heure, la ligne de temps, la tige du locuteur, la colonne des
+# noms, puis le texte.
 _GUTTER_WIDTH = 52
 _SPINE_X = _GUTTER_WIDTH + 10   # abscisse du filet vertical
 _STEM_X = _SPINE_X + 9          # abscisse de la tige colorée
-_TEXT_X = _STEM_X + 14          # début du texte
+_NAME_X = _STEM_X + 14          # début de la colonne des noms
+_NAME_WIDTH = 92                # « Marie-Claire » tient ; au-delà, ellipse
+_TEXT_X = _NAME_X + _NAME_WIDTH + 8   # début du texte
+# Mesure du texte : ~70 signes en New York 16 px. Plus large, l'œil perd la
+# ligne suivante au retour ; la feuille garde le reste en marge.
+_TEXT_MAX_WIDTH = 620
+_READING_SIZE = 16
 _TICK_HALF = 3                  # demi-longueur du tick horizontal
 _MARK_RADIUS = 3.0              # encoche d'un moment marqué, posée sur le filet
 
 
 class ChatItem(QWidget):
+    # Clic sur l'en-tête du locuteur : l'étiquette (jamais le nom affiché).
+    speaker_clicked = Signal(str)
+
     def __init__(self, text: str, ts: datetime | None = None, speaker: str | None = None,
                  show_header: bool = True, show_ts: bool = True, seq: int | None = None,
                  name: str | None = None, parent=None):
@@ -64,42 +88,72 @@ class ChatItem(QWidget):
         self.ts_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
         self.ts_label.setFixedWidth(_GUTTER_WIDTH)
 
-        # En-tête de groupe : le nom seul, en capitales espacées — c'est une
-        # étiquette de partition, pas un titre.
+        # Colonne des noms : le nom seul, en début de prise de parole ; une
+        # cellule vide sinon, pour que le texte garde son aplomb.
         self.speaker_label: QLabel | None = None
+        name_cell = QWidget()
+        name_cell.setFixedWidth(_NAME_WIDTH)
+        name_col = QVBoxLayout(name_cell)
+        name_col.setContentsMargins(0, 0, 0, 0)
         if speaker and show_header:
-            self.speaker_label = QLabel((name or speaker).upper())
-            self.speaker_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            self.speaker_label = QLabel()
+            self.speaker_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            # Nommer un locuteur n'était accessible que par un clic droit, sans
+            # rien qui le laisse deviner : l'en-tête lui-même est le bon endroit.
+            self.speaker_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.speaker_label.setToolTip("Cliquer pour nommer ce locuteur")
+            self.speaker_label.installEventFilter(self)
+            self._set_speaker_text()
+            name_col.addWidget(self.speaker_label, 0, Qt.AlignmentFlag.AlignTop)
+        name_col.addStretch(1)
 
-        self.text_label = QLabel(self._text)
+        self.text_label = QLabel()
+        self.text_label.setTextFormat(Qt.TextFormat.RichText)
         self.text_label.setWordWrap(True)
+        self.text_label.setMaximumWidth(_TEXT_MAX_WIDTH)
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-
-        content = QVBoxLayout()
-        content.setContentsMargins(0, 0, 0, 0)
-        content.setSpacing(2)
-        if self.speaker_label is not None:
-            content.addWidget(self.speaker_label)
-        content.addWidget(self.text_label)
+        self.text_label.setText(reading_html(self._text))
 
         layout = QHBoxLayout(self)
-        # Nouveau groupe : de l'air au-dessus ; suite du même groupe : serré.
-        top = 16 if show_header else 1
-        layout.setContentsMargins(0, top, 0, 1)
+        # Nouvelle prise de parole : de l'air au-dessus ; suite : serré.
+        top = 14 if show_header else 2
+        layout.setContentsMargins(0, top, 0, 2)
         layout.setSpacing(0)
         layout.addWidget(self.ts_label, 0, Qt.AlignmentFlag.AlignTop)
-        layout.addSpacing(_TEXT_X - _GUTTER_WIDTH)
-        layout.addLayout(content, 1)
+        layout.addSpacing(_NAME_X - _GUTTER_WIDTH)
+        layout.addWidget(name_cell)
+        layout.addSpacing(_TEXT_X - _NAME_X - _NAME_WIDTH)
+        # Pas de drapeau d'alignement ici : avec lui, Qt donne au libellé sa
+        # largeur « idéale » et calcule mal la hauteur d'un texte à retours à
+        # la ligne — des lignes entières disparaissaient.
+        layout.addWidget(self.text_label, 1)
+        layout.addStretch(0)
 
         self.apply_theme()
         self._fade_in()
 
+    def eventFilter(self, obj, event):
+        if (obj is self.speaker_label
+                and event.type() == QEvent.Type.MouseButtonRelease
+                and event.button() == Qt.MouseButton.LeftButton):
+            self.speaker_clicked.emit(self._speaker)
+            return True
+        return super().eventFilter(obj, event)
+
     def set_speaker_name(self, name: str | None) -> None:
         """Change le nom **affiché** du locuteur, jamais son étiquette."""
         self._name = name
-        if self.speaker_label is not None and self._speaker:
-            self.speaker_label.setText((name or self._speaker).upper())
+        self._set_speaker_text()
+
+    def _set_speaker_text(self) -> None:
+        if self.speaker_label is None or not self._speaker:
+            return
+        full = self._name or self._speaker
+        metrics = self.speaker_label.fontMetrics()
+        self.speaker_label.setText(
+            metrics.elidedText(full, Qt.TextElideMode.ElideRight, _NAME_WIDTH - 4)
+        )
 
     def set_marked(self, marked: bool) -> None:
         """Marque (ou démarque) ce moment sur la ligne de temps."""
@@ -115,7 +169,7 @@ class ChatItem(QWidget):
     def set_text(self, text: str) -> None:
         """Remplace le texte affiché (correction LLM asynchrone)."""
         self._text = text
-        self.text_label.setText(text)
+        self.text_label.setText(reading_html(text))
 
     # --- peinture de la ligne de temps ---
 
@@ -174,12 +228,15 @@ class ChatItem(QWidget):
         t = current_theme()
         self.ts_label.setStyleSheet(meta_qss(t) + " padding-top: 8px;")
         if self.speaker_label is not None:
+            # Aligné sur la première ligne du texte : la hauteur d'x du SF à
+            # 13 px tombe sur celle du New York à 16 px avec ce retrait.
             self.speaker_label.setStyleSheet(
-                f"font-family: {FONT_UI}; font-size: 10px; font-weight: 700; "
-                f"letter-spacing: 1.1px; color: {_rgba(speaker_color(self._speaker))}; "
-                "background: transparent;"
+                f"font-family: {FONT_UI}; font-size: 13px; font-weight: 600; "
+                f"color: {_rgba(speaker_color(self._speaker))}; "
+                "background: transparent; padding-top: 1px;"
             )
-        self.text_label.setStyleSheet(reading_qss(t))
+            self._set_speaker_text()
+        self.text_label.setStyleSheet(reading_qss(t, size=_READING_SIZE))
         self.update()
 
     def _fade_in(self) -> None:

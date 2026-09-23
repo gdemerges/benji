@@ -65,7 +65,7 @@ class OnboardingWindow(QDialog):
         self.setWindowTitle("Bienvenue dans Benji")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setModal(True)
-        self.setFixedSize(560, 420)
+        self.setFixedSize(640, 540)
 
         self._downloader: onboarding.ModelDownloader | None = None
         self._mic_state = onboarding.microphone_status()
@@ -116,14 +116,10 @@ class OnboardingWindow(QDialog):
         # Ce qui distingue Benji tient en une phrase, et c'est celle qui décide
         # de son usage en réunion : rien ne sort de la machine.
         self.welcome_body = QLabel(
-            "• Tout se passe sur cet ordinateur. Aucune parole, aucun compte rendu "
-            "n'est envoyé sur Internet.\n\n"
-            "• Benji écoute votre micro et affiche le texte en direct, par-dessus "
-            "vos autres fenêtres.\n\n"
-            "• Chaque réunion est conservée séparément, relisible, exportable et "
-            "effaçable quand vous le voulez.\n\n"
-            "Deux réglages à faire une seule fois : le micro, puis le "
-            "téléchargement du moteur de transcription."
+            "Rien ne quitte cet ordinateur : ni votre voix, ni le texte. Chaque "
+            "réunion se relit, s'exporte ou s'efface quand vous le voulez.\n\n"
+            "Deux réglages, une seule fois : le micro, puis le moteur de "
+            "transcription."
         )
         self.welcome_body.setWordWrap(True)
 
@@ -131,10 +127,43 @@ class OnboardingWindow(QDialog):
         layout.setSpacing(10)
         layout.addWidget(self.welcome_title)
         layout.addWidget(self.welcome_lede)
-        layout.addSpacing(8)
+        layout.addSpacing(4)
         layout.addWidget(self.welcome_body)
+        layout.addSpacing(10)
+        layout.addWidget(self._build_specimen())
         layout.addStretch(1)
         return page
+
+    def _build_specimen(self) -> QWidget:
+        """Un extrait de réunion, composé avec les vrais composants du direct.
+
+        Plutôt que de décrire Benji en puces, on le montre : la feuille, la
+        ligne de temps, les noms en colonne, la ligne qui s'écrit. C'est la
+        page que l'utilisateur verra dans une minute.
+        """
+        from datetime import datetime
+
+        from benji.ui.widgets.chat_item import ChatItem
+        from benji.ui.widgets.partial_bubble import PartialBubble
+        from benji.ui.widgets.sheet import Sheet
+
+        sheet = Sheet(margins=(10, 12, 16, 10))
+        at = datetime.now().replace(hour=14, minute=32)
+        self._specimen_items = [
+            ChatItem("On part sur le 21 pour la mise en production ?",
+                     ts=at, speaker="A", name="Marie"),
+            ChatItem("Le 21, avec un gel du code le 17 au soir.",
+                     ts=at, speaker="B", name="Karim", show_ts=False),
+        ]
+        for item in self._specimen_items:
+            sheet.body.addWidget(item)
+        self._specimen_partial = PartialBubble()
+        self._specimen_partial.set_text("Je préviens les clients pilotes")
+        # Un spécimen ne s'anime pas : l'onde danserait sans que personne parle.
+        self._specimen_partial.wave.set_active(False)
+        sheet.body.addWidget(self._specimen_partial)
+        self._specimen = sheet
+        return sheet
 
     def _build_offer(self) -> QWidget:
         """Gratuit (local) et/ou payant (cloud), pas exclusifs l'un de l'autre.

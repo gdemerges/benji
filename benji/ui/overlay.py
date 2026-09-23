@@ -102,6 +102,10 @@ class SubtitleOverlay(QWidget):
         # VAD peut en tenir plusieurs (cf. stt/diarization.py). Les remplacer les
         # uns par les autres n'afficherait que le dernier locuteur.
         self._final_lines: list[dict] = []
+        # Prénoms donnés aux locuteurs (étiquette → nom), poussés par la fenêtre
+        # principale (cf. `set_speaker_name`). En visio, c'est ici qu'un « A »
+        # sert le moins : on lit les sous-titres, pas le transcript.
+        self._speaker_names: dict[str, str] = {}
         self._shutting_down = False  # Flag to prevent operations during shutdown
         self._current_screen = None  # Screen the overlay is currently anchored to
 
@@ -457,8 +461,27 @@ class SubtitleOverlay(QWidget):
             if not self._shutting_down:
                 log.exception("Error in _update_text")
 
+    def set_speaker_name(self, label: str, name: str) -> None:
+        """Nomme un locuteur (nom vide = retour à l'étiquette), à l'écran aussi.
+
+        La couleur reste celle de l'**étiquette** : renommer ne doit pas faire
+        changer quelqu'un de couleur en pleine réunion.
+        """
+        name = (name or "").strip()
+        if name:
+            self._speaker_names[label] = name
+        else:
+            self._speaker_names.pop(label, None)
+        if self._final_lines and not self._shutting_down:
+            self._render_final_lines()
+            self._reposition()
+
+    def clear_speaker_names(self) -> None:
+        """Nouvelle réunion : les étiquettes ne désignent plus les mêmes gens."""
+        self._speaker_names.clear()
+
     @staticmethod
-    def _lines_html(lines) -> str:
+    def _lines_html(lines, names: dict[str, str] | None = None) -> str:
         """Compose les tours de parole, un par ligne.
 
         Le nom du locuteur est coloré et le corps échappé : une transcription
@@ -466,6 +489,7 @@ class SubtitleOverlay(QWidget):
         """
         from html import escape
 
+        names = names or {}
         parts = []
         for line in lines:
             body = escape(line["text"])
@@ -475,7 +499,7 @@ class SubtitleOverlay(QWidget):
                 c = speaker_color(speaker, on_dark=True)
                 parts.append(
                     f'<span style="color:{c.name()};font-weight:bold;">'
-                    f"{escape(speaker)}</span> {body}"
+                    f"{escape(names.get(speaker, speaker))}</span> {body}"
                 )
             else:
                 parts.append(body)
@@ -497,11 +521,11 @@ class SubtitleOverlay(QWidget):
         # correction LLM tardive s'appliquerait à un texte déjà rogné.
         lines = list(self._final_lines)
         self.label.setTextFormat(Qt.TextFormat.RichText)
-        self.label.setText(self._lines_html(lines))
+        self.label.setText(self._lines_html(lines, self._speaker_names))
 
         while len(lines) > 1 and self.label.sizeHint().height() > budget:
             lines.pop(0)
-            self.label.setText(self._lines_html(lines))
+            self.label.setText(self._lines_html(lines, self._speaker_names))
 
         # Un tour unique trop long ne peut pas être retiré : on montre sa fin —
         # la partie qu'on vient d'entendre — derrière une ellipse qui dit que le
@@ -512,7 +536,7 @@ class SubtitleOverlay(QWidget):
             while len(words) > 4 and self.label.sizeHint().height() > budget:
                 words = words[max(1, len(words) // 8):]
                 lines[0] = {**lines[0], "text": "… " + " ".join(words)}
-                self.label.setText(self._lines_html(lines))
+                self.label.setText(self._lines_html(lines, self._speaker_names))
 
     def _arm_window_guard(self) -> None:
         """Réassertion périodique du niveau de fenêtre, pendant l'affichage."""

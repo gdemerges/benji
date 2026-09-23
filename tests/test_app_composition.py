@@ -298,3 +298,60 @@ def test_l_arret_est_idempotent_sans_raccourci_ni_titreur():
     app = BenjiApplication()
     app.shutdown()
     app.shutdown()
+
+
+class _Recorder:
+    def __init__(self):
+        self.calls = []
+
+    def set_speaker_name(self, label, name):
+        self.calls.append(("name", label, name))
+
+    def clear_speaker_names(self):
+        self.calls.append(("clear",))
+
+
+def test_un_nom_pose_dans_les_reunions_atteint_le_direct(monkeypatch):
+    from types import SimpleNamespace
+
+    from benji import meetings
+
+    monkeypatch.setattr(meetings, "current_meeting_id", lambda: "m-en-cours")
+    app = BenjiApplication()
+    live, overlay = _Recorder(), _Recorder()
+    app.main_window = SimpleNamespace(live_tab=live)
+    app.overlay = overlay
+
+    app._on_speaker_named_in_history("m-ancienne", "A", "Paul")
+    assert live.calls == []  # une autre réunion : le direct n'est pas concerné
+
+    app._on_speaker_named_in_history("m-en-cours", "A", "Alice")
+    # Le Live relaie lui-même à l'overlay (signal) : pas de double application.
+    assert live.calls == [("name", "A", "Alice")]
+    assert overlay.calls == []
+
+
+def test_sans_fenetre_le_nom_va_droit_aux_sous_titres(monkeypatch):
+    from benji import meetings
+
+    monkeypatch.setattr(meetings, "current_meeting_id", lambda: "m1")
+    app = BenjiApplication()
+    overlay = _Recorder()
+    app.main_window, app.overlay = None, overlay
+
+    app._on_speaker_named_in_history("m1", "A", "Alice")
+    assert overlay.calls == [("name", "A", "Alice")]
+
+
+def test_une_nouvelle_reunion_oublie_les_noms_partout():
+    from types import SimpleNamespace
+
+    app = BenjiApplication()
+    live, overlay = _Recorder(), _Recorder()
+    app.main_window = SimpleNamespace(live_tab=live)
+    app.overlay = overlay
+
+    app._on_new_meeting()
+
+    assert live.calls == [("clear",)]
+    assert overlay.calls == [("clear",)]

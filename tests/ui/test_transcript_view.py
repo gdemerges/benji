@@ -46,7 +46,7 @@ def test_les_noms_choisis_remplacent_les_labels(qtbot):
     # Le nom est un affichage : l'étiquette du moteur reste, sinon la couleur du
     # locuteur changerait au moment où on le nomme.
     assert item._speaker == "A"
-    assert item.speaker_label.text() == "ALICE"
+    assert item.speaker_label.text() == "Alice"
 
 
 def test_entrees_desordonnees_sont_remises_dans_l_ordre(qtbot):

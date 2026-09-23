@@ -5,9 +5,11 @@ Modal, sur le thread Qt. Chaque changement validé est écrit dans `UserSettings
 poussés à chaud sur l'overlay via `on_live_change` ; ceux de transcription ne
 prennent effet qu'au prochain lancement — un bandeau le signale.
 
-Le style suit la fenêtre principale (`benji.ui.style`) : dégradé de fond,
-sections encadrées discrètes, contrôles thémés, bouton d'action en accent. Se
-recharge au changement de thème système.
+Le style suit la fenêtre principale (`benji.ui.style`) : un aplat, des sections
+séparées par un filet plutôt qu'encadrées, titrées en casse normale — les cadres
+de groupe à titre en capitales étaient le look Qt par défaut, celui d'un panneau
+de réglages générique. Bouton d'enregistrement en aplat d'encre. Se recharge au
+changement de thème système.
 """
 
 from __future__ import annotations
@@ -132,12 +134,15 @@ class PreferencesDialog(QDialog):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 16)
-        layout.setSpacing(16)
+        layout.setContentsMargins(28, 12, 28, 20)
+        layout.setSpacing(6)
 
         # === Transcription (redémarrage requis) ===
-        self._stt_box = QGroupBox("TRANSCRIPTION")
+        self._stt_box = QGroupBox("Transcription")
         stt_form = QFormLayout(self._stt_box)
+        # Première section : pas de filet au-dessus, rien à séparer.
+        self._stt_box.setObjectName("first_section")
+        self._forms = [stt_form]
         stt_form.setContentsMargins(16, 18, 16, 16)
         stt_form.setSpacing(12)
         stt_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -176,7 +181,7 @@ class PreferencesDialog(QDialog):
         # Le point faible d'une transcription de réunion n'est pas la grammaire,
         # ce sont les noms propres. Le moteur n'accepte aucun prompt : on relit
         # donc sa sortie (cf. benji/stt/lexicon.py).
-        self._glossary_box = QGroupBox("GLOSSAIRE")
+        self._glossary_box = QGroupBox("Glossaire")
         glossary_layout = QVBoxLayout(self._glossary_box)
         glossary_layout.setContentsMargins(16, 18, 16, 16)
         glossary_layout.setSpacing(8)
@@ -200,8 +205,9 @@ class PreferencesDialog(QDialog):
         self._engine_box = None
         self._hint_engines = None
         if self._llm is not None:
-            self._engine_box = QGroupBox("MOTEURS")
+            self._engine_box = QGroupBox("Moteurs")
             engine_form = QFormLayout(self._engine_box)
+            self._forms.append(engine_form)
             engine_form.setContentsMargins(16, 18, 16, 16)
             engine_form.setSpacing(12)
             engine_form.setLabelAlignment(
@@ -230,8 +236,9 @@ class PreferencesDialog(QDialog):
         self._audio_box = None
         self._hint_audio = None
         if self._audio is not None:
-            self._audio_box = QGroupBox("AUDIO SYSTÈME")
+            self._audio_box = QGroupBox("Audio des visios")
             audio_form = QFormLayout(self._audio_box)
+            self._forms.append(audio_form)
             audio_form.setContentsMargins(16, 18, 16, 16)
             audio_form.setSpacing(12)
             audio_form.setLabelAlignment(
@@ -255,8 +262,9 @@ class PreferencesDialog(QDialog):
             layout.addWidget(self._audio_box)
 
         # === Affichage (application immédiate) ===
-        self._ui_box = QGroupBox("AFFICHAGE")
+        self._ui_box = QGroupBox("Sous-titres")
         ui_form = QFormLayout(self._ui_box)
+        self._forms.append(ui_form)
         ui_form.setContentsMargins(16, 18, 16, 16)
         ui_form.setSpacing(12)
         ui_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -297,6 +305,29 @@ class PreferencesDialog(QDialog):
         self._buttons.accepted.connect(self._save)
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
+        self._align_forms()
+
+    def _align_forms(self) -> None:
+        """Une seule colonne d'étiquettes pour toutes les sections.
+
+        Chaque `QFormLayout` dimensionne ses étiquettes pour lui seul : d'une
+        section à l'autre, les champs partaient de deux abscisses différentes.
+        Et sur macOS le formulaire entier est **centré** par défaut quand ses
+        champs ne s'étirent pas : un formulaire plus étroit glissait à droite.
+        """
+        labels = []
+        for form in self._forms:
+            form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            for row in range(form.rowCount()):
+                item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                if item is not None and isinstance(item.widget(), QLabel):
+                    labels.append(item.widget())
+        if not labels:
+            return
+        width = max(label.sizeHint().width() for label in labels)
+        for label in labels:
+            label.setFixedWidth(width)
+            label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     def _refresh_devices(self) -> None:
         """Peuple la liste des boucles détectées et rédige le message d'aide.
@@ -346,54 +377,41 @@ class PreferencesDialog(QDialog):
 
     def _apply_theme(self) -> None:
         t = current_theme()
-        bg = t.window_background
-        delta = 6 if t.is_dark else 5
-        top = bg.lighter(100 + delta)
-        bottom = bg.darker(100 + delta)
         label = t.label
         sec = t.secondary_label
-        tert = t.tertiary_label
         # Le bouton d'enregistrement est un aplat d'encre : dans Benji le rouge
         # ne dit qu'une chose, « on enregistre » — pas « valider ».
         on_ink = "#ffffff" if not t.is_dark else f"#{t.paper.red():02x}{t.paper.green():02x}{t.paper.blue():02x}"
-        sep = t.separator
-        field_bg = t.label_alpha(6 if t.is_dark else 4)
-        field_border = t.label_alpha(14 if t.is_dark else 12)
+        field_bg = t.card
+        field_border = t.spine
 
         def rgba(c):
             return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
 
         self.setStyleSheet(f"""
-            QDialog {{
-                background-color: qlineargradient(
-                    x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgb({top.red()},{top.green()},{top.blue()}),
-                    stop:1 rgb({bottom.red()},{bottom.green()},{bottom.blue()})
-                );
-            }}
+            QDialog {{ background-color: {rgba(t.sheet)}; }}
             QGroupBox {{
                 font-family: {FONT_UI};
-                font-size: 10px;
+                font-size: 13px;
                 font-weight: 600;
-                color: {rgba(tert)};
-                border: 1px solid {rgba(sep)};
-                border-radius: 10px;
-                margin-top: 10px;
-                padding-top: 6px;
-                background-color: {rgba(t.label_alpha(3))};
+                color: {rgba(label)};
+                border: none;
+                border-top: 1px solid {rgba(t.spine)};
+                margin-top: 14px;
+                padding-top: 22px;
+                background: transparent;
             }}
+            QGroupBox#first_section {{ border-top: none; margin-top: 0px; }}
             QGroupBox::title {{
-                subcontrol-origin: margin;
+                subcontrol-origin: padding;
                 subcontrol-position: top left;
-                left: 14px;
-                top: 1px;
-                padding: 0 4px;
-                letter-spacing: 0.6px;
+                left: 0px;
+                top: 8px;
             }}
             QLabel {{
                 font-family: {FONT_UI};
                 font-size: 13px;
-                color: {rgba(label)};
+                color: {rgba(sec)};
                 background: transparent;
             }}
             QComboBox, QFontComboBox, QSpinBox {{
@@ -402,12 +420,12 @@ class PreferencesDialog(QDialog):
                 color: {rgba(label)};
                 background-color: {rgba(field_bg)};
                 border: 1px solid {rgba(field_border)};
-                border-radius: 6px;
+                border-radius: 7px;
                 padding: 4px 8px;
                 min-height: 22px;
             }}
             QComboBox:hover, QFontComboBox:hover, QSpinBox:hover {{
-                border-color: {rgba(t.ink_alpha(40))};
+                border-color: {rgba(t.ink_alpha(30))};
             }}
             QComboBox::drop-down, QFontComboBox::drop-down {{ border: none; width: 18px; }}
             QSpinBox::up-button, QSpinBox::down-button {{ width: 16px; border: none; }}
@@ -423,7 +441,7 @@ class PreferencesDialog(QDialog):
                 font-size: 13px;
                 font-weight: 600;
                 color: {on_ink};
-                background-color: {rgba(t.ink_alpha(92))};
+                background-color: {rgba(t.ink_alpha(92) if not t.is_dark else t.ink)};
                 border: none;
                 padding: 7px 18px;
                 border-radius: 7px;
@@ -433,27 +451,29 @@ class PreferencesDialog(QDialog):
                 font-family: {FONT_UI};
                 font-size: 13px;
                 font-weight: 500;
-                color: {rgba(label)};
+                color: {rgba(sec)};
                 background: transparent;
-                border: 1px solid {rgba(field_border)};
-                padding: 7px 16px;
-                border-radius: 6px;
+                border: none;
+                padding: 7px 14px;
+                border-radius: 7px;
             }}
             QPushButton#ghost_btn:hover {{
-                background-color: {rgba(t.label_alpha(8))};
+                color: {rgba(label)};
+                background-color: {rgba(t.ink_alpha(7))};
             }}
         """)
         # Le bandeau d'info en couleur secondaire (le QSS QLabel ci-dessus cible
         # aussi ce label, on le repasse en tertiaire ici pour le distinguer).
         hint_qss = (
-            f"font-family: {FONT_UI}; font-size: 11px; color: {rgba(sec)}; background: transparent;"
+            f"font-family: {FONT_UI}; font-size: 12px; color: {rgba(t.ink_faint)}; "
+            "background: transparent;"
         )
         self._hint.setStyleSheet(hint_qss)
         self._hint_glossary.setStyleSheet(hint_qss)
         self._glossary.setStyleSheet(
             f"font-family: {FONT_UI}; font-size: 12px; color: {rgba(label)}; "
             f"background-color: {rgba(field_bg)}; border: 1px solid {rgba(field_border)}; "
-            "border-radius: 6px; padding: 6px;"
+            "border-radius: 7px; padding: 6px;"
         )
         if self._hint_engines is not None:
             self._hint_engines.setStyleSheet(hint_qss)

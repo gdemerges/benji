@@ -12,7 +12,15 @@ import logging
 from datetime import datetime, timedelta
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtGui import (
+    QColor,
+    QGuiApplication,
+    QKeySequence,
+    QLinearGradient,
+    QPainter,
+    QPen,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
@@ -34,16 +42,17 @@ from benji.ui.style import (
     field_qss,
     meta_qss,
     primary_button_qss,
+    reading_qss,
     secondary_button_qss,
 )
-from benji.ui.widgets.chat_item import ChatItem
+from benji.ui.widgets.chat_item import _GUTTER_WIDTH, _READING_SIZE, _SPINE_X, _TEXT_X, ChatItem
 from benji.ui.widgets.partial_bubble import PartialBubble
 from benji.ui.widgets.waveform import WaveformDot
 
 log = logging.getLogger(__name__)
 
-# Largeur de lecture confortable (mesure ~75 caractères à 15px).
-_MAX_CONTENT_WIDTH = 720
+# Largeur de la colonne du transcript : gouttière, noms, puis ~70 signes de texte.
+_MAX_CONTENT_WIDTH = 820
 # Au-delà de ce silence, on rouvre un groupe même si le locuteur n'a pas changé.
 _GROUP_GAP = timedelta(minutes=3)
 # Nombre d'items conservés pour le remplacement par correction (borne mémoire).
@@ -56,40 +65,102 @@ _MAX_ITEMS = 500
 
 
 class _EmptyState(QWidget):
-    """Écran d'accueil du Live : forme d'onde + invitation à parler."""
+    """Le Live avant la première phrase : la page est déjà réglée.
+
+    Plutôt qu'un message centré sur une feuille blanche, on montre la ligne de
+    temps qui attend — le filet qui descend jusqu'au point du « maintenant »,
+    à l'endroit exact où la première phrase va s'écrire. L'onde dans la
+    gouttière danse dès que le micro entend une voix, avant le premier mot.
+    """
+
+    _ANCHOR_Y = 17  # ordonnée du point, relative à la ligne d'attente
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.wave = WaveformDot(bar_width=3, gap=3, height=24)
-        self.title = QLabel("Benji écoute")
-        self.title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self.sub = QLabel("La transcription apparaît ici dès que quelqu'un parle.")
-        self.sub.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.wave = WaveformDot(bar_width=2, gap=2, height=14)
+        self.title = QLabel("Benji écoute.")
+        self.sub = QLabel("La transcription s'écrira ici dès que quelqu'un parle.")
+        self.sub.setWordWrap(True)
 
-        layout = QVBoxLayout(self)
-        layout.addStretch(3)
-        layout.addWidget(self.wave, 0, Qt.AlignmentFlag.AlignHCenter)
-        layout.addSpacing(14)
-        layout.addWidget(self.title)
-        layout.addSpacing(4)
-        layout.addWidget(self.sub)
-        layout.addStretch(4)
+        gutter = QWidget()
+        gutter.setFixedWidth(_GUTTER_WIDTH)
+        gutter_row = QHBoxLayout(gutter)
+        gutter_row.setContentsMargins(0, 0, 0, 0)
+        gutter_row.addStretch(1)
+        gutter_row.addWidget(self.wave, 0, Qt.AlignmentFlag.AlignTop)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        text_col.addWidget(self.title)
+        text_col.addWidget(self.sub)
+
+        self.line = QWidget()
+        row = QHBoxLayout(self.line)
+        row.setContentsMargins(0, 8, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(gutter, 0, Qt.AlignmentFlag.AlignTop)
+        row.addSpacing(_TEXT_X - _GUTTER_WIDTH)
+        row.addLayout(text_col, 1)
+
+        # Même grille que le transcript (marges, colonne bornée, centrée) : le
+        # point doit tomber là où tombera la première phrase.
+        column = QWidget()
+        column.setMaximumWidth(_MAX_CONTENT_WIDTH)
+        column.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        col_layout = QVBoxLayout(column)
+        col_layout.setContentsMargins(0, 0, 0, 0)
+        col_layout.addStretch(1)
+        col_layout.addWidget(self.line)
+        self._column = column
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(16, 0, 16, 14)
+        outer.addStretch(1)
+        outer.addWidget(column, 8)
+        outer.addStretch(1)
 
         self.apply_theme()
 
+    def paintEvent(self, event):
+        """Le filet descend du haut de la page, en fondu, jusqu'au point."""
+        super().paintEvent(event)
+        t = current_theme()
+        x = self._column.x() + _SPINE_X
+        dot_y = self._column.y() + self.line.y() + 8 + self._ANCHOR_Y - 8
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        gradient = QLinearGradient(0, 0, 0, dot_y)
+        faded = QColor(t.spine)
+        faded.setAlpha(0)
+        gradient.setColorAt(0.0, faded)
+        gradient.setColorAt(1.0, QColor(t.spine))
+        painter.setPen(QPen(gradient, 1))
+        painter.drawLine(x, 0, x, dot_y)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(t.ink_ghost))
+        painter.drawEllipse(x - 3.5, dot_y - 3.5, 7, 7)
+        painter.end()
+
+    def set_listening(self, speaking: bool) -> None:
+        """Une voix est détectée : l'onde danse, et prend le rouge du direct.
+
+        Au repos elle reste à l'encre pâle — le rouge dit « on prend au mot,
+        maintenant », ce qui n'est pas le cas tant que personne ne parle."""
+        self._speaking = speaking
+        self.wave.set_active(speaking)
+        t = current_theme()
+        self.wave.set_color(t.record if speaking else t.ink_faint)
+
     def apply_theme(self) -> None:
         t = current_theme()
-        self.wave.set_color(t.accent)
-        self.title.setStyleSheet(
-            f"font-family: {FONT_UI}; font-size: 16px; font-weight: 600; "
-            f"color: rgba({t.secondary_label.red()},{t.secondary_label.green()},{t.secondary_label.blue()},{t.secondary_label.alpha()}); "
-            "background: transparent;"
-        )
+        self.wave.set_color(t.record if getattr(self, "_speaking", False) else t.ink_faint)
+        self.title.setStyleSheet(reading_qss(t, size=_READING_SIZE, color=t.ink_muted))
         self.sub.setStyleSheet(
-            f"font-family: {FONT_UI}; font-size: 13px; "
-            f"color: rgba({t.tertiary_label.red()},{t.tertiary_label.green()},{t.tertiary_label.blue()},{t.tertiary_label.alpha()}); "
+            f"font-family: {FONT_UI}; font-size: 12px; "
+            f"color: rgba({t.ink_faint.red()},{t.ink_faint.green()},{t.ink_faint.blue()},{t.ink_faint.alpha()}); "
             "background: transparent;"
         )
+        self.update()
 
 
 class _ConsentBanner(QWidget):
@@ -140,9 +211,11 @@ class _MeetingActions:
     à chaque phrase, on veut toujours la vue courante.
     """
 
-    def __init__(self, items, speaker_names: dict[str, str]):
+    def __init__(self, items, speaker_names: dict[str, str], on_named=None):
         self._items = items
         self._speaker_names = speaker_names
+        # Prévenu de chaque nom posé, pour que l'overlay suive (cf. LiveTab).
+        self._on_named = on_named
         self._on_learn_term = None
 
     def set_learn_handler(self, handler) -> None:
@@ -222,10 +295,15 @@ class _MeetingActions:
         for item in self._items():
             if item._speaker == label:
                 item.set_speaker_name(name or None)
+        if self._on_named is not None:
+            self._on_named(label, name)
 
 
 class LiveTab(QWidget):
     save_requested = Signal()
+    # (étiquette, nom) — nom vide = retour à l'étiquette. Relayé à l'overlay :
+    # c'est là, pendant la visio, qu'un prénom sert le plus.
+    speaker_named = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -243,7 +321,9 @@ class LiveTab(QWidget):
         # Marquer / nommer / glossaire : gestes persistés, regroupés à part
         # (cf. _MeetingActions). Construit après _build_ui() : il capture
         # self._items, qui a besoin de self.content_layout.
-        self._actions = _MeetingActions(self._items, self._speaker_names)
+        self._actions = _MeetingActions(
+            self._items, self._speaker_names, on_named=self.speaker_named.emit
+        )
 
     def _build_ui(self) -> None:
         self.scroll = QScrollArea()
@@ -368,7 +448,7 @@ class LiveTab(QWidget):
         if msg_type == "vad_status":
             # L'onde de l'état vide danse dès que la voix est détectée :
             # feedback immédiat « le micro m'entend » avant le premier mot.
-            self.empty.wave.set_active(bool(item.get("speaking")))
+            self.empty.set_listening(bool(item.get("speaking")))
         elif msg_type == "segment_start":
             self._partial_text = ""
             self.partial.set_text("")
@@ -424,6 +504,8 @@ class LiveTab(QWidget):
         item = ChatItem(text, ts=now, speaker=speaker,
                         show_header=new_group, show_ts=show_ts, seq=seq,
                         name=self._speaker_names.get(speaker) if speaker else None)
+        if speaker:
+            item.speaker_clicked.connect(self.rename_speaker)
         self.content_layout.addWidget(item)
         self._last_speaker = speaker
         self._last_time = now
@@ -635,6 +717,15 @@ class LiveTab(QWidget):
     def set_speaker_name(self, label: str, name: str) -> None:
         """Applique un nom aux lignes déjà affichées et à celles qui viendront."""
         self._actions.set_speaker_name(label, name)
+
+    def clear_speaker_names(self) -> None:
+        """Nouvelle réunion : les étiquettes ne désignent plus les mêmes gens.
+
+        Les lignes déjà affichées gardent le nom qu'elles portaient — elles
+        appartiennent à la réunion précédente, où il était juste. Le dict est
+        vidé **en place** : `_MeetingActions` en tient la même référence.
+        """
+        self._speaker_names.clear()
 
     def _open_context_menu(self, pos) -> None:
         menu = QMenu(self)

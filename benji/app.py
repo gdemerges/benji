@@ -435,8 +435,29 @@ class BenjiApplication:
         consent = getattr(getattr(self, "transcriber", None), "consent", None)
         return bool(consent.armed) if consent is not None else True
 
+    def _on_speaker_named_in_history(self, meeting_id: str, label: str, name: str) -> None:
+        """Un nom posé dans la fenêtre Réunions vaut pour le direct, si c'est
+        la réunion en cours : sinon le Live et les sous-titres continueraient
+        d'afficher « A » pour quelqu'un qu'on vient de nommer."""
+        from benji import meetings
+
+        if meeting_id != meetings.current_meeting_id():
+            return
+        if self.main_window is not None:
+            self.main_window.live_tab.set_speaker_name(label, name)  # relaie à l'overlay
+        elif self.overlay is not None:
+            self.overlay.set_speaker_name(label, name)
+
     def _on_new_meeting(self) -> None:
-        """Nouvelle réunion : l'accord est à redemander, le bandeau revient."""
+        """Nouvelle réunion : l'accord est à redemander, le bandeau revient.
+
+        Les noms de locuteurs repartent de zéro : « A » ne désigne plus
+        forcément la même personne.
+        """
+        if self.main_window is not None:
+            self.main_window.live_tab.clear_speaker_names()
+        if self.overlay is not None:
+            self.overlay.clear_speaker_names()
         consent = getattr(getattr(self, "transcriber", None), "consent", None)
         if consent is None:
             return
@@ -490,6 +511,7 @@ class BenjiApplication:
 
         self.live_summary_window = LiveSummaryWindow()
         self.live_summary_window.hide()
+        self.history_window.speaker_named.connect(self._on_speaker_named_in_history)
 
         if self.mode != "window":
             return
@@ -517,6 +539,8 @@ class BenjiApplication:
         )
         # Click sur overlay → revient à la fenêtre.
         self.overlay._on_click = lambda: self.controller.show_window()
+        # Un locuteur nommé dans le Live l'est aussi dans les sous-titres.
+        self.main_window.live_tab.speaker_named.connect(self.overlay.set_speaker_name)
 
     def _build_tray_and_shortcuts(self) -> None:
         show_main = (lambda: self.controller.show_window()) if self.controller else None

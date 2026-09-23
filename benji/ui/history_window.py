@@ -15,10 +15,11 @@ et toujours derrière une confirmation).
 import logging
 import threading
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -33,6 +35,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QStyle,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
@@ -51,6 +55,7 @@ from benji.ui.style import (
     panel_background_qss,
     primary_button_qss,
     secondary_button_qss,
+    speaker_color,
 )
 from benji.ui.widgets.sheet import Sheet
 from benji.ui.widgets.transcript_view import TranscriptView
@@ -76,7 +81,51 @@ _MOIS = (
 
 
 def _date_fr(moment: datetime) -> str:
-    return f"{moment.day} {_MOIS[moment.month - 1]} {moment.year} · {moment:%H:%M}"
+    return f"{moment.day} {_MOIS[moment.month - 1]} {moment.year} à {moment:%H:%M}"
+
+
+class _MeetingRowDelegate(QStyledItemDelegate):
+    """Une réunion de la liste : le titre en encre, le détail dessous, plus
+    petit et plus pâle. Une `QListWidget` stylée en QSS ne sait donner qu'un
+    seul corps à ses deux lignes — les deux se lisaient avec le même poids."""
+
+    _HEIGHT = 50
+
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), self._HEIGHT)
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        t = current_theme()
+        title, _, subtitle = (index.data() or "").partition("\n")
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(option.rect).adjusted(0, 1, 0, -1)
+        if selected or hovered:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(t.ink_alpha(8 if selected else 4))
+            painter.drawRoundedRect(rect, 7, 7)
+
+        text_rect = rect.adjusted(10, 7, -10, -7)
+        title_font = QFont(option.font)
+        title_font.setPixelSize(13)
+        title_font.setWeight(QFont.Weight.DemiBold if selected else QFont.Weight.Medium)
+        painter.setFont(title_font)
+        painter.setPen(QColor(t.ink))
+        metrics = painter.fontMetrics()
+        painter.drawText(
+            text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+            metrics.elidedText(title, Qt.TextElideMode.ElideRight, int(text_rect.width())),
+        )
+        sub_font = QFont(option.font)
+        sub_font.setPixelSize(11)
+        painter.setFont(sub_font)
+        painter.setPen(t.ink_faint)
+        painter.drawText(
+            text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, subtitle
+        )
+        painter.restore()
 _MEETING_ID_ROLE = Qt.ItemDataRole.UserRole
 
 
@@ -86,6 +135,9 @@ class HistoryWindow(QWidget):
     # Émis depuis un fil de fond (le titreur automatique). La connexion est
     # queued : le rechargement a bien lieu sur le thread Qt.
     meeting_renamed = Signal()
+    # (réunion, étiquette, nom) : un locuteur nommé ici doit l'être aussi dans
+    # le Live et l'overlay quand c'est la réunion en cours (cf. app.py).
+    speaker_named = Signal(str, str, str)
 
     def __init__(self, session_start: datetime = None, stats: SessionStats | None = None):
         super().__init__()
@@ -157,6 +209,8 @@ class HistoryWindow(QWidget):
 
         self.meeting_list = QListWidget()
         self.meeting_list.setFrameShape(QListWidget.Shape.NoFrame)
+        self.meeting_list.setItemDelegate(_MeetingRowDelegate(self.meeting_list))
+        self.meeting_list.setMouseTracking(True)
         self.meeting_list.currentRowChanged.connect(self._on_meeting_changed)
 
         self.new_meeting_btn = QPushButton("＋  Nouvelle réunion")
@@ -180,6 +234,13 @@ class HistoryWindow(QWidget):
         self.title_label = QLabel("")
         self.title_label.setWordWrap(True)
         self.meta_label = QLabel("")
+        # « Présents : Marie, Karim, C » — la ligne d'ouverture d'un
+        # procès-verbal. Chaque nom est un lien : cliquer nomme le locuteur,
+        # là où l'on voit qu'il ne l'est pas encore.
+        self.present_label = QLabel("")
+        self.present_label.setTextFormat(Qt.TextFormat.RichText)
+        self.present_label.setToolTip("Cliquer sur un nom pour le changer")
+        self.present_label.linkActivated.connect(self._rename_one_speaker)
 
         self.rename_meeting_btn = QPushButton("Renommer")
         self.rename_meeting_btn.clicked.connect(self._rename_meeting)
@@ -190,6 +251,8 @@ class HistoryWindow(QWidget):
         titles.setSpacing(3)
         titles.addWidget(self.title_label)
         titles.addWidget(self.meta_label)
+        titles.addSpacing(4)
+        titles.addWidget(self.present_label)
         head.addLayout(titles, 1)
         head.addWidget(self.rename_meeting_btn, 0, Qt.AlignmentFlag.AlignTop)
 
@@ -245,34 +308,32 @@ class HistoryWindow(QWidget):
             #sidebar {{ background: transparent; }}
             #detail {{ background: transparent; }}
             QListWidget {{
+                font-family: {FONT_UI};
                 background: transparent;
                 border: none;
                 outline: none;
-            }}
-            QListWidget::item {{
-                color: {_rgba(t.ink_muted)};
-                padding: 7px 9px;
-                border-radius: 7px;
-                margin-bottom: 1px;
-            }}
-            QListWidget::item:hover {{ background-color: {_rgba(t.ink_alpha(5))}; }}
-            QListWidget::item:selected {{
-                background-color: {_rgba(t.ink_alpha(9))};
-                color: {_rgba(ink)};
             }}
             """
             + field_qss(t)
         )
         self.search.setStyleSheet(field_qss(t))
         self.sidebar_title.setStyleSheet(
-            f"font-family: {FONT_UI}; font-size: 11px; font-weight: 700; "
-            f"letter-spacing: 1.1px; color: {_rgba(t.ink_faint)}; background: transparent;"
+            f"font-family: {FONT_UI}; font-size: 13px; font-weight: 600; "
+            f"color: {_rgba(ink)}; background: transparent; padding-left: 2px;"
         )
         self.title_label.setStyleSheet(
-            f"font-family: {FONT_DISPLAY}; font-size: 19px; font-weight: 600; "
-            f"letter-spacing: -0.2px; color: {_rgba(ink)}; background: transparent;"
+            f"font-family: {FONT_DISPLAY}; font-size: 22px; font-weight: 700; "
+            f"color: {_rgba(ink)}; background: transparent;"
         )
-        self.meta_label.setStyleSheet(meta_qss(t))
+        self.meta_label.setStyleSheet(
+            f"font-family: {FONT_UI}; font-size: 13px; "
+            f"color: {_rgba(t.ink_muted)}; background: transparent;"
+        )
+        self.present_label.setStyleSheet(
+            f"font-family: {FONT_UI}; font-size: 13px; "
+            f"color: {_rgba(t.ink_muted)}; background: transparent;"
+        )
+        self.meeting_list.viewport().update()
         self.stats_label.setStyleSheet(meta_qss(t, 10))
         self.head_rule.setStyleSheet(f"background-color: {_rgba(t.spine)}; border: none;")
         for btn in (self.copy_btn, self.export_btn, self.speakers_btn,
@@ -336,8 +397,8 @@ class HistoryWindow(QWidget):
         echanges = f"{count} échange{'s' if count > 1 else ''}"
         if meeting.ended_at:
             minutes = max(1, int((meeting.ended_at - meeting.started_at).total_seconds() // 60))
-            return f"{day} · {minutes} min · {echanges}"
-        return f"{day} · en cours · {echanges}"
+            return f"{day}, {minutes} min, {echanges}"
+        return f"{day}, en cours, {echanges}"
 
     def _row_for(self, meeting_id: str) -> int:
         for row in range(self.meeting_list.count()):
@@ -458,6 +519,8 @@ class HistoryWindow(QWidget):
         self._entries = search.filter_entries(all_entries, self.search.text())
         self.title_label.setText(self._current_title() or "Aucune réunion")
         self.meta_label.setText(self._meta_text())
+        self.present_label.setText(self._present_html())
+        self.present_label.setVisible(bool(self.present_label.text()))
         self.transcript.set_entries(self._entries, self._speaker_names, self._marks())
         self._refresh_export_enabled()
 
@@ -484,10 +547,32 @@ class HistoryWindow(QWidget):
             parts.append(_date_fr(started))
         count = len(self._entries)
         parts.append(f"{count} échange{'s' if count > 1 else ''}")
-        speakers = export.distinct_speakers(self._entries)
-        if speakers:
-            parts.append(f"{len(speakers)} locuteurs" if len(speakers) > 1 else "1 locuteur")
-        return "  ·  ".join(parts)
+        return ", ".join(parts)
+
+    def _present_html(self) -> str:
+        """« Présents : … », chaque locuteur à sa couleur et cliquable."""
+        speakers = export.distinct_speakers(self._all_entries)
+        if not speakers:
+            return ""
+        links = []
+        for label in speakers:
+            name = self._speaker_names.get(label) or label
+            color = speaker_color(label).name()
+            links.append(
+                f'<a href="{escape(label)}" style="color:{color};'
+                f'text-decoration:none;font-weight:600;">{escape(name)}</a>'
+            )
+        return "Présents : " + ", ".join(links)
+
+    def _rename_one_speaker(self, label: str) -> None:
+        name, ok = QInputDialog.getText(
+            self, "Nommer le locuteur", f"Nom pour « {label} » :",
+            text=self._speaker_names.get(label, ""),
+        )
+        if not ok:
+            return
+        self._apply_speaker_name(label, name.strip())
+        self.load_history()
 
     def _refresh_export_enabled(self):
         has_entries = bool(self._entries)
@@ -561,17 +646,21 @@ class HistoryWindow(QWidget):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         for label, edit in edits.items():
-            name = edit.text().strip()
-            if name:
-                self._speaker_names[label] = name
-            else:
-                self._speaker_names.pop(label, None)
-            if self._meeting_id and self._meeting_id != meetings.LEGACY_ID:
-                try:
-                    meetings.name_speaker(label, name, self._meeting_id)
-                except Exception:
-                    log.exception("Nom de locuteur non persisté")
-        self.load_history()  # ré-affiche avec les nouveaux noms
+            self._apply_speaker_name(label, edit.text().strip())
+        self.load_history()
+
+    def _apply_speaker_name(self, label: str, name: str) -> None:
+        """Nomme un locuteur de la réunion affichée : écran, registre, direct."""
+        if name:
+            self._speaker_names[label] = name
+        else:
+            self._speaker_names.pop(label, None)
+        if self._meeting_id and self._meeting_id != meetings.LEGACY_ID:
+            try:
+                meetings.name_speaker(label, name, self._meeting_id)
+            except Exception:
+                log.exception("Nom de locuteur non persisté")
+            self.speaker_named.emit(self._meeting_id, label, name)  # ré-affiche avec les nouveaux noms
 
     def clear_history(self):
         """Efface la réunion affichée — jamais tout l'historique d'un clic."""

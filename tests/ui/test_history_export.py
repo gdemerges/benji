@@ -73,7 +73,7 @@ def test_rename_shows_names_in_the_transcript(window):
     window.load_history()
 
     headers = [i.speaker_label.text() for i in window.transcript._items]
-    assert headers == ["ALICE", "BOB"]
+    assert headers == ["Alice", "Bob"]
     # Les étiquettes du moteur restent : elles portent la couleur.
     assert [i._speaker for i in window.transcript._items] == ["A", "B"]
     assert "Bonjour." in window.transcript.plain_text()
