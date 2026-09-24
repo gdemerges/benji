@@ -115,10 +115,10 @@ client                              serveur
   "token": "<access_token>",          // si pas en header Authorization
   "audio": {
     "encoding": "pcm_s16le",          // v1 : PCM 16-bit signé little-endian
-    "sample_rate": 16000,             // Hz (défaut app = 16000)
+    "sample_rate": 16000,             // Hz : 8000/16000/24000/44100/48000, sinon bad_request
     "channels": 1
   },
-  "language": "fr",                   // défaut "fr"
+  "language": "fr",                   // défaut "fr" ; null = détection automatique
   "diarization": true,                // labels de locuteurs côté serveur
   "glossary": ["Demergès", "Anthropic", "MLX"]  // biais lexical, optionnel
 }
@@ -160,6 +160,9 @@ Règles :
   de `benji.ui.style.speaker_color` côté client).
 - `drop: true` sur `final_text` annule l'overlay partiel (hallucination/silence).
 - Le client doit tolérer l'absence de `speaker` (diarisation off ou indispo).
+- Un segment peut rendre **plusieurs** `final_text`, un par tour de parole,
+  quand deux voix s'enchaînent sans pause (découpe par mot, cf.
+  `backend/app/stt/turns.py`) — même comportement que le mode local.
 
 ## 4. Résumé — `POST /v1/summary` (SSE)
 
@@ -239,7 +242,12 @@ droit manquant, `4429` quota dépassé.
 - Le serveur compte les **secondes d'audio STT** par session (`closed.stt_seconds`)
   et agrège dans `quota`. C'est le poste facturable dimensionnant.
 - Le résumé est compté mais négligeable (coût ~0,008 $/résumé en Haiku).
-- Dépassement de quota → `quota_exceeded` (429 / event / close 4429).
+- Dépassement de quota → `quota_exceeded` (429 / event / close 4429). Vérifié à
+  l'ouverture **et en cours de session** : le segment en cours est finalisé, la
+  conso comptée, puis la session fermée.
+- La conso est comptée **quelle que soit l'issue** (arrêt, déconnexion, panne du
+  provider). Une panne du provider en cours de session → `upstream_error` puis
+  close `1011`.
 
 ### Stripe (abonnement Pro)
 

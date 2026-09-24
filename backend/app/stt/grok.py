@@ -10,7 +10,7 @@ conditions réelles ; les tests couvrent la traduction des messages.
 
 Mapping :
   transcript.partial (interim) → segment_start (1re fois) + `word` (deltas)
-  transcript.done   (final)    → final_text (+ speaker si diarisation) + vad off
+  transcript.done   (final)    → final_text par tour (+ speaker si diarisation) + vad off
 """
 
 from __future__ import annotations
@@ -21,17 +21,11 @@ import logging
 from urllib.parse import urlencode
 
 from app.stt.base import BaseSTTSession
+from app.stt.turns import split_turns
 
 log = logging.getLogger(__name__)
 
 _XAI_URL = "wss://api.x.ai/v1/stt"
-
-
-def _speaker_label(n) -> str | None:
-    if n is None:
-        return None
-    n = int(n)
-    return chr(ord("A") + n) if 0 <= n < 26 else f"S{n}"
 
 
 class GrokSTTSession(BaseSTTSession):
@@ -39,7 +33,7 @@ class GrokSTTSession(BaseSTTSession):
         self,
         api_key: str,
         sample_rate: int = 16000,
-        language: str = "fr",
+        language: str | None = "fr",
         diarization: bool = True,
     ):
         super().__init__()
@@ -47,10 +41,13 @@ class GrokSTTSession(BaseSTTSession):
         self._params = {
             "encoding": "pcm",
             "sample_rate": str(sample_rate),
-            "language": language,
             "diarize": "true" if diarization else "false",
             "interim_results": "true",
         }
+        # None = détection automatique : on laisse Grok décider plutôt que
+        # d'envoyer `language=None` dans l'URL.
+        if language:
+            self._params["language"] = language
         self._ws = None
         self._reader: asyncio.Task | None = None
         self._partial_words: list[str] = []
@@ -99,13 +96,13 @@ class GrokSTTSession(BaseSTTSession):
         if mtype == "transcript.done":
             transcript = (msg.get("text") or "").strip()
             if transcript:
-                out: dict = {"type": "final_text", "text": transcript}
+                # Un final_text par tour de parole (cf. turns.py).
                 words = msg.get("words") or []
-                if words and "speaker" in words[0]:
-                    spk = _speaker_label(words[0].get("speaker"))
+                for text, spk in split_turns(transcript, words, ("text",)):
+                    out: dict = {"type": "final_text", "text": text}
                     if spk:
                         out["speaker"] = spk
-                await self._emit(out)
+                    await self._emit(out)
             await self._emit({"type": "vad_status", "speaking": False})
             self._partial_words = []
             self._in_segment = False

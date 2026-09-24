@@ -27,7 +27,8 @@ def make_session(start: dict) -> STTSession:
     """Construit une session STT depuis le message `start` du client."""
     audio = start.get("audio") or {}
     sample_rate = int(audio.get("sample_rate", 16000)) or 16000
-    language = start.get("language", "fr")
+    # Absent → "fr" (défaut du contrat) ; `null` explicite → détection automatique.
+    language = start.get("language", "fr") or None
     diarization = bool(start.get("diarization", True))
 
     backend = os.environ.get("STT_BACKEND", "deepgram").lower()
