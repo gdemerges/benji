@@ -252,12 +252,16 @@ def store() -> MeetingStore:
         return _store_locked()
 
 
-def current_meeting() -> Meeting:
-    """Réunion en cours, ouverte paresseusement au premier besoin."""
+def current_meeting(started_at: datetime | None = None) -> Meeting:
+    """Réunion en cours, ouverte paresseusement au premier besoin.
+
+    `started_at` ne sert qu'à l'ouverture : c'est l'instant de la première
+    phrase, qui peut précéder l'accord de conservation de plusieurs minutes.
+    """
     global _current
     with _current_lock:
         if _current is None:
-            _current = _store_locked().start()
+            _current = _store_locked().start(now=started_at)
         return _current
 
 
@@ -349,6 +353,20 @@ def start_meeting(title: str | None = None) -> Meeting:
             s.end(_current.id)
         _current = s.start(title)
         return _current
+
+
+def delete_meeting(meeting_id: str) -> None:
+    """Supprime une réunion du registre, et l'oublie si c'était la courante.
+
+    Sans ce second geste, la transcription qui suit s'écrivait sous l'identifiant
+    d'une réunion effacée : des entrées orphelines, sans titre ni registre. La
+    prochaine phrase conservée ouvrira une réunion neuve.
+    """
+    global _current
+    with _current_lock:
+        _store_locked().delete(meeting_id)
+        if _current is not None and _current.id == meeting_id:
+            _current = None
 
 
 def end_current_meeting() -> None:

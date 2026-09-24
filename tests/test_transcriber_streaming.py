@@ -466,7 +466,7 @@ class _FakeHistory:
     def __init__(self):
         self.added: list[tuple] = []
 
-    def add(self, text, speaker=None, meeting_id=None):
+    def add(self, text, speaker=None, meeting_id=None, timestamp=None):
         self.added.append((text, speaker))
 
 
@@ -653,3 +653,20 @@ def test_final_with_context_keeps_only_its_own_words(monkeypatch):
     assert [f["text"] for f in finals] == ["La suite"]
     # Le moteur a bien reçu le tampon complet, contexte compris.
     assert backend.calls == [3 * SR]
+
+
+def test_a_l_arret_les_corrections_en_attente_sont_conservees(monkeypatch):
+    """Avec la correction LLM, c'est le correcteur qui écrit l'historique. Son
+    fil n'était jamais arrêté : ce qui attendait sa correction mourait avec
+    l'app. On le verse tel quel (le texte brut, déjà affiché)."""
+    t, _ = _make(monkeypatch, [])
+    t.history = _FakeHistory()
+    t.consent = RecordingConsent(t.history, armed=True)
+    t._correction_queue = Queue(maxsize=8)  # correcteur jamais démarré
+    t._correction_queue.put((1, "Première phrase.", "A"))
+    t._correction_queue.put((2, "Deuxième phrase.", None))
+
+    t.transcribe_queue.put(None)
+    t.run()
+
+    assert t.history.added == [("Première phrase.", "A"), ("Deuxième phrase.", None)]

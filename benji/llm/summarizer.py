@@ -168,23 +168,96 @@ def _stream(model, tokenizer, prompt: str, on_token: Callable[[str], None]) -> s
     return "".join(chunks).strip()
 
 
-def save_summary(summary: str) -> Path:
-    """Save the summary to a timestamped markdown file."""
+# Qui résume quoi : nom de fichier → réunions dont il contient des phrases. Un
+# index à côté plutôt qu'un nom de fichier enrichi, que l'onglet Résumés
+# reconnaît par motif (`summary_AAAAMMJJ_HHMMSS.md`) et ignore ce fichier-ci.
+_SUMMARY_INDEX = ".meetings.json"
+
+
+def _summaries_dir() -> Path:
     from benji.paths import user_path
 
-    cache_dir = user_path("summaries")
+    return user_path("summaries")
+
+
+def _write_private(path: Path, text: str) -> None:
+    # Mode 0600 dès la création (un write-puis-chmod laisserait le contenu
+    # lisible par tous entre les deux appels).
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def _read_index(directory: Path) -> dict[str, list[str]]:
+    import json
+
+    try:
+        data = json.loads((directory / _SUMMARY_INDEX).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): [str(m) for m in v] for k, v in data.items() if isinstance(v, list)}
+
+
+def _write_index(directory: Path, index: dict[str, list[str]]) -> None:
+    import json
+
+    tmp = directory / (_SUMMARY_INDEX + ".tmp")
+    _write_private(tmp, json.dumps(index, ensure_ascii=False))
+    os.replace(tmp, directory / _SUMMARY_INDEX)
+
+
+def save_summary(summary: str, entries: list[dict] | None = None) -> Path:
+    """Save the summary to a timestamped markdown file.
+
+    `entries` : les phrases résumées. Leurs réunions sont notées dans l'index,
+    pour qu'effacer une réunion emporte aussi ses résumés (`delete_summaries`).
+    """
+    from benji import meetings
+
+    cache_dir = _summaries_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now()
-    filename = f"summary_{timestamp.strftime('%Y%m%d_%H%M%S')}.md"
+    stem = f"summary_{timestamp.strftime('%Y%m%d_%H%M%S')}"
+    filename = f"{stem}.md"
+    # Deux résumés dans la même seconde (réunion + direct) : le second écrasait
+    # le premier. L'onglet Résumés date un nom suffixé par sa mtime.
+    n = 2
+    while (cache_dir / filename).exists():
+        filename = f"{stem}_{n}.md"
+        n += 1
     file_path = cache_dir / filename
 
-    # Mode 0600 dès la création (un write-puis-chmod laisserait le résumé
-    # lisible par tous entre les deux appels).
-    fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(f"# Résumé de session — {timestamp.strftime('%d/%m/%Y %H:%M')}\n\n")
-        f.write(summary)
-        f.write("\n")
+    _write_private(
+        file_path,
+        f"# Résumé de session — {timestamp.strftime('%d/%m/%Y %H:%M')}\n\n{summary}\n",
+    )
+
+    meeting_ids = sorted({e.get("meeting") or meetings.LEGACY_ID for e in entries or []})
+    if meeting_ids:
+        index = _read_index(cache_dir)
+        index[filename] = meeting_ids
+        _write_index(cache_dir, index)
 
     return file_path
+
+
+def delete_summaries(meeting_id: str) -> int:
+    """Efface les résumés qui contiennent des phrases de `meeting_id`.
+
+    Un résumé qui couvre plusieurs réunions part aussi : il cite la réunion
+    effacée. Les résumés d'avant l'index ne sont rattachés à rien et restent —
+    on ne devine pas leur réunion. Retourne le nombre de fichiers effacés.
+    """
+    directory = _summaries_dir()
+    index = _read_index(directory)
+    doomed = [name for name, ids in index.items() if meeting_id in ids]
+    if not doomed:
+        return 0
+    for name in doomed:
+        (directory / name).unlink(missing_ok=True)
+        del index[name]
+    _write_index(directory, index)
+    return len(doomed)

@@ -12,12 +12,13 @@ le `QApplication`.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import signal
 import sys
 import threading
 from dataclasses import dataclass, field
-from queue import Queue
+from queue import Empty, Full, Queue
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -90,6 +91,9 @@ class BenjiApplication:
         self.transcriber: Transcriber | None = None
         self.remote_stt = None
         self.history = None
+        # Portillon de conservation (benji/recording.py), local **et** remote :
+        # écouter n'est pas garder, quel que soit le moteur qui transcrit.
+        self.consent = None
 
         self.vad_thread: threading.Thread | None = None
         self.stt_supervisor: threading.Thread | None = None
@@ -330,11 +334,18 @@ class BenjiApplication:
             # Transcription côté backend : pas de modèle local, pas de VAD. Le micro
             # est streamé au backend, dont les events alimentent display_queue.
             from benji.history import TranscriptionHistory
+            from benji.recording import RecordingConsent
             from benji.stt.remote import build_remote_stt_client
 
             self.history = TranscriptionHistory()
+            # Le client distant écrivait droit dans l'historique : en mode cloud,
+            # tout partait sur disque sans l'accord que le mode local exige. Il
+            # écrit désormais à travers le même portillon (même signature `add`).
+            self.consent = RecordingConsent(
+                self.history, armed=not self.cfg.stt.confirm_before_saving
+            )
             self.remote_stt = build_remote_stt_client(
-                self.audio_queue, self.display_queue, self.history,
+                self.audio_queue, self.display_queue, self.consent,
                 self.cfg.stt, self.cfg.llm, sample_rate=self.cfg.audio.sample_rate,
                 # Rafraîchi à chaque (re)connexion : l'access token expire en 15 min.
                 token_provider=self.session.access_token if self.session else None,
@@ -351,6 +362,7 @@ class BenjiApplication:
         self.app.processEvents()
         self.transcriber.warmup()
         self.history = self.transcriber.history
+        self.consent = getattr(self.transcriber, "consent", None)
 
         splash.set_status("Démarrage de la capture audio…")
         self.app.processEvents()
@@ -425,13 +437,20 @@ class BenjiApplication:
         ).exec()
 
     @property
-    def _consent(self):
-        """Portillon de conservation du transcripteur, s'il y en a un.
+    def _gate(self):
+        """Le portillon de conservation, local ou remote. None s'il n'y en a pas."""
+        if self.consent is not None:
+            return self.consent
+        return getattr(getattr(self, "transcriber", None), "consent", None)
 
-        Absent en mode remote (pas de transcripteur local) et quand
-        `confirm_before_saving` est désactivé — dans ce cas rien n'est à demander.
+    @property
+    def _consent(self):
+        """Portillon de conservation encore fermé, s'il y en a un.
+
+        None quand l'accord est déjà donné — ou d'office, avec
+        `confirm_before_saving` désactivé : rien n'est alors à demander.
         """
-        consent = getattr(getattr(self, "transcriber", None), "consent", None)
+        consent = self._gate
         if consent is None or consent.armed:
             return None
         return consent
@@ -457,10 +476,10 @@ class BenjiApplication:
 
     @property
     def _has_consent_gate(self) -> bool:
-        return getattr(getattr(self, "transcriber", None), "consent", None) is not None
+        return self._gate is not None
 
     def _is_saving(self) -> bool:
-        consent = getattr(getattr(self, "transcriber", None), "consent", None)
+        consent = self._gate
         return bool(consent.armed) if consent is not None else True
 
     def _on_speaker_named_in_history(self, meeting_id: str, label: str, name: str) -> None:
@@ -520,7 +539,7 @@ class BenjiApplication:
             self.main_window.live_tab.clear_speaker_names()
         if self.overlay is not None:
             self.overlay.clear_speaker_names()
-        consent = getattr(getattr(self, "transcriber", None), "consent", None)
+        consent = self._gate
         if consent is None:
             return
         consent.reset(armed=not self.cfg.stt.confirm_before_saving)
@@ -558,28 +577,48 @@ class BenjiApplication:
             self.capture.pause()
             if self.system_capture is not None:
                 self.system_capture.stop()
-            # L'utterance en cours ne sera jamais terminée : éteindre
-            # l'indicateur « en écoute » de l'UI.
+            # L'énoncé en cours ne se terminera pas de lui-même : le VAD le clôt
+            # (sinon, à la reprise, la phrase suivante lui était recollée —
+            # parfois des minutes plus tard).
+            if self.vad is not None:
+                self.vad.request_flush()
+            # Éteindre l'indicateur « en écoute » de l'UI. **Sans bloquer** : on
+            # est sur le thread Qt, celui-là même qui vide display_queue — un
+            # `put` bloquant sur une file pleine figeait l'app pour de bon.
             if self.display_queue is not None:
-                self.display_queue.put({"type": "vad_status", "speaking": False})
+                with contextlib.suppress(Full):
+                    self.display_queue.put_nowait({"type": "vad_status", "speaking": False})
         paused = self.capture.is_paused
         if self.main_window is not None:
             self.main_window.set_paused(paused)
         return paused
 
     def _build_windows(self) -> None:
-        self.history_window = HistoryWindow(session_start=self.session_start, stats=self.stats)
+        # Un seul provider de résumé pour toute l'app : la fenêtre Réunions
+        # appelait le modèle local d'office, cloud choisi ou non. Le jeton est
+        # redemandé à la session à chaque résumé (il expire en 15 min).
+        summary_provider = build_summary_provider(
+            self.cfg.llm,
+            token_provider=self.session.access_token if self.session else None,
+        )
+        self.history_window = HistoryWindow(
+            session_start=self.session_start, stats=self.stats,
+            summary_provider=summary_provider,
+        )
         self.history_window.hide()
 
         self.live_summary_window = LiveSummaryWindow()
         self.live_summary_window.hide()
         self.history_window.speaker_named.connect(self._on_speaker_named_in_history)
+        # Nouvelle réunion (ou réunion en cours effacée) depuis la fenêtre
+        # Réunions : même conséquence que depuis le tray.
+        self.history_window.current_meeting_changed.connect(self._on_new_meeting)
 
         if self.mode != "window":
             self.bus.event.connect(self._on_display_event)
             return
 
-        self.summary_worker = SummaryWorker(provider=build_summary_provider(self.cfg.llm))
+        self.summary_worker = SummaryWorker(provider=summary_provider)
         self.summary_worker.start()
 
         self.main_window = MainWindow(
@@ -735,6 +774,29 @@ class BenjiApplication:
         self.overlay.cleanup()
         QTimer.singleShot(0, self.app.quit)
 
+    def _discard_display(self) -> None:
+        """Après l'arrêt du bus, plus personne ne vide display_queue.
+
+        Or ses `put` sont bloquants : le thread STT restait figé sur une file
+        pleine et n'atteignait jamais sa fin de boucle — là où il verse ce que
+        le correcteur n'a pas traité. On vide donc la file, et on la fait se
+        vider à chaque écriture jusqu'à l'arrêt complet.
+        """
+        queue = self.display_queue
+        if queue is None:
+            return
+
+        def drain() -> None:
+            while True:
+                try:
+                    queue.get_nowait()
+                except Empty:
+                    return
+
+        if hasattr(queue, "set_listener"):
+            queue.set_listener(drain)
+        drain()
+
     def shutdown(self) -> None:
         log.info("Shutting down...")
         # Horodate la fin de la réunion en cours (si une transcription a eu lieu)
@@ -746,6 +808,7 @@ class BenjiApplication:
             self.summary_worker.shutdown()
         if self.bus is not None:
             self.bus.stop()
+        self._discard_display()
         if self.live_summarizer:
             self.live_summarizer.stop()
         if self.meeting_titler is not None:

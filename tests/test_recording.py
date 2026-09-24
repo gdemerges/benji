@@ -15,9 +15,11 @@ from benji.recording import RecordingConsent
 class FakeHistory:
     def __init__(self):
         self.rows: list[tuple[str, str | None]] = []
+        self.stamps: list = []
 
-    def add(self, text: str, speaker: str | None = None) -> None:
+    def add(self, text: str, speaker: str | None = None, timestamp=None) -> None:
         self.rows.append((text, speaker))
+        self.stamps.append(timestamp)
 
 
 def test_rien_nest_ecrit_avant_laccord():
@@ -128,3 +130,56 @@ def test_le_contenu_ne_fuite_pas_dans_les_logs(caplog):
 
     assert "Dupont" not in caplog.text
     assert "40 000" not in caplog.text
+
+
+def test_le_versement_garde_l_heure_ou_c_etait_dit(monkeypatch):
+    """Sans elle, tout ce qui précédait l'accord prenait l'heure du clic : la
+    ligne de temps s'effondrait en un point et le SRT durait zéro seconde."""
+    from datetime import datetime
+
+    instants = iter([datetime(2026, 9, 24, 10, 0), datetime(2026, 9, 24, 10, 3)])
+
+    class _Clock:
+        @staticmethod
+        def now():
+            return next(instants)
+
+    monkeypatch.setattr(recording, "datetime", _Clock)
+    h = FakeHistory()
+    c = RecordingConsent(h)
+    c.add("Premier point.")
+    c.add("Trois minutes plus tard.")
+    c.arm()
+
+    assert h.stamps == [datetime(2026, 9, 24, 10, 0), datetime(2026, 9, 24, 10, 3)]
+
+
+def test_une_phrase_dite_pendant_le_versement_n_est_pas_perdue():
+    """`add` (thread STT) et `arm` (thread Qt) se croisent : sans verrou, une
+    phrase pouvait tomber dans la liste qu'on venait de vider, portillon
+    ouvert — jamais écrite."""
+    import threading
+
+    c = None
+    written: list[str] = []
+    during = threading.Event()
+
+    class SlowHistory:
+        def add(self, text, speaker=None, timestamp=None):
+            if text == "avant" and not during.is_set():
+                during.set()
+                # Pendant le versement, le thread STT rend une nouvelle phrase.
+                t = threading.Thread(target=c.add, args=("pendant",))
+                t.start()
+                t.join(timeout=0.2)  # bloqué par le verrou : c'est voulu
+                self.late = t
+            written.append(text)
+
+    h = SlowHistory()
+    c = RecordingConsent(h)
+    c.add("avant")
+    c.arm()
+    h.late.join(timeout=2)
+
+    assert written == ["avant", "pendant"]
+    assert c.pending_count == 0

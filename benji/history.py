@@ -40,12 +40,20 @@ class TranscriptionHistory:
 
     # --- écriture ---
 
-    def add(self, text: str, speaker: str | None = None, meeting_id: str | None = None):
-        """Ajoute une transcription (optionnellement taguée d'un locuteur)."""
+    def add(self, text: str, speaker: str | None = None, meeting_id: str | None = None,
+            timestamp: datetime | None = None):
+        """Ajoute une transcription (optionnellement taguée d'un locuteur).
+
+        `timestamp` : quand la phrase a été dite, si ce n'est pas maintenant —
+        le versement de ce qui précédait l'accord de conservation
+        (`benji/recording.py`). Une réunion ouverte par cette entrée commence
+        alors à cet instant, pas à celui du clic.
+        """
+        said_at = timestamp or datetime.now()
         entry = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": said_at.isoformat(),
             "text": text,
-            "meeting": meeting_id or meetings.current_meeting().id,
+            "meeting": meeting_id or meetings.current_meeting(started_at=said_at).id,
         }
         if speaker:
             entry["speaker"] = speaker

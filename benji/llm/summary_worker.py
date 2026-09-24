@@ -55,7 +55,7 @@ class SummaryWorker(QThread):
                 if not full:
                     self.failed.emit(sid, "Le résumé est vide (aucune transcription).")
                     continue
-                path = save_summary(full)
+                path = save_summary(full, entries)
                 self.finished.emit(sid, path)
             except Exception as e:
                 log.exception("Summary failed for %s", sid)

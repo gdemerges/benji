@@ -371,3 +371,69 @@ def test_une_nouvelle_reunion_oublie_les_noms_partout():
 
     assert live.calls == [("clear",)]
     assert overlay.calls == [("clear",)]
+
+
+def test_en_mode_remote_rien_n_est_conserve_sans_accord(monkeypatch):
+    """Le client distant écrivait droit dans l'historique : en mode cloud, tout
+    partait sur disque sans l'accord que le mode local exige."""
+    import benji.stt.remote as remote_mod
+    from benji.recording import RecordingConsent
+
+    seen = {}
+
+    def fake_build(audio_q, display_q, history, *a, **kw):
+        seen["history"] = history
+        return object()
+
+    monkeypatch.setattr(remote_mod, "build_remote_stt_client", fake_build)
+
+    class _FakeSplash:
+        def set_status(self, _text):
+            pass
+
+    app = BenjiApplication(AppConfigs(stt=STTConfig(stt_provider="remote")))
+    app.remote_mode = True
+    app.app = type("QApp", (), {"processEvents": lambda self: None})()
+    app._load_transcriber(_FakeSplash())
+
+    assert isinstance(seen["history"], RecordingConsent)
+    assert seen["history"] is app.consent
+    assert not app.consent.armed
+    assert app._has_consent_gate and not app._is_saving()
+
+    # Nouvelle réunion : l'accord est redemandé, en remote aussi.
+    app.consent.arm()
+    app._on_new_meeting()
+    assert not app.consent.armed
+
+
+def test_la_pause_ne_bloque_jamais_le_thread_qt():
+    """Le thread Qt vide lui-même display_queue : un `put` bloquant sur une
+    file pleine le figeait pour de bon."""
+    from queue import Queue
+
+    app = BenjiApplication()
+    app.display_queue = Queue(maxsize=1)
+    app.display_queue.put("plein")
+    flushed = []
+    app.vad = type("V", (), {"request_flush": lambda self: flushed.append(True)})()
+    app.capture = type("C", (), {
+        "is_paused": False,
+        "pause": lambda self: setattr(self, "is_paused", True),
+    })()
+
+    assert app.toggle_pause() is True  # rend la main malgré la file pleine
+    assert flushed == [True]
+
+
+def test_a_l_arret_display_queue_ne_bloque_plus_les_producteurs():
+    from benji.queues import NotifyingQueue
+
+    app = BenjiApplication()
+    app.display_queue = NotifyingQueue(maxsize=1)
+    app.display_queue.put("plein")
+
+    app._discard_display()
+
+    app.display_queue.put("a", timeout=0.5)  # ne lève pas Full
+    app.display_queue.put("b", timeout=0.5)

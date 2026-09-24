@@ -183,3 +183,103 @@ def test_une_reunion_est_trouvee_par_son_titre(window):
     window.search.setText("produit")
 
     assert window.meeting_list.count() == 1
+
+
+def test_nouvelle_reunion_depuis_la_fenetre_previent_l_app(window, qtbot):
+    """L'app doit redemander l'accord de conservation, comme depuis le tray :
+    sans ce signal, l'accord de la réunion précédente valait pour la nouvelle."""
+    window.history.add("Avant.")
+    window.reload_meetings()
+
+    with qtbot.waitSignal(window.current_meeting_changed, timeout=1000):
+        window._new_meeting()
+
+
+def test_effacer_la_reunion_en_cours_previent_l_app_et_l_oublie(window, qtbot, monkeypatch):
+    window.history.add("Ce qu'on dit en ce moment.")
+    current = meetings.current_meeting_id()
+    window.reload_meetings()
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: QMessageBox.StandardButton.Yes)
+
+    with qtbot.waitSignal(window.current_meeting_changed, timeout=1000):
+        window.clear_history()
+
+    # La suite ne s'écrit pas sous l'identifiant d'une réunion effacée.
+    assert meetings.current_meeting_id() is None
+    window.history.add("La suite.")
+    assert meetings.current_meeting_id() != current
+
+
+def test_effacer_une_ancienne_reunion_ne_touche_pas_a_l_accord(window, qtbot, monkeypatch):
+    window.history.add("Ancienne.")
+    old = meetings.current_meeting_id()
+    meetings.start_meeting()
+    window.history.add("En cours.")
+    window.reload_meetings()
+    window.meeting_list.setCurrentRow(window._row_for(old))
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: QMessageBox.StandardButton.Yes)
+
+    with qtbot.assertNotEmitted(window.current_meeting_changed):
+        window.clear_history()
+
+
+def test_effacer_une_reunion_emporte_ses_resumes(window, monkeypatch):
+    from benji.llm import summarizer
+
+    window.history.add("À effacer.")
+    doomed = meetings.current_meeting_id()
+    path = summarizer.save_summary("Résumé.", window.history.get_for_meeting(doomed))
+    window.reload_meetings()
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: QMessageBox.StandardButton.Yes)
+
+    window.clear_history()
+
+    assert not path.exists()
+
+
+def test_resumer_passe_par_le_provider_de_l_app(qtbot):
+    """Et non par le modèle local d'office : sur Windows, ou avec le cloud
+    choisi, il n'y a pas de modèle local."""
+    seen = []
+
+    class Provider:
+        def summarize(self, entries, on_token=None):
+            seen.append(len(entries))
+            return "Résumé cloud."
+
+    w = HistoryWindow(summary_provider=Provider())
+    qtbot.addWidget(w)
+    w.history.add("Bonjour.")
+    w.reload_meetings()
+    ready = []
+    w._summary_ready.connect(lambda s, p: ready.append(s))
+    w._on_summary_ready = lambda s, p: None  # pas de boîte modale en test
+
+    w._run_summarize()
+
+    assert seen == [1]
+    assert ready == ["Résumé cloud."]
+
+
+def test_resumer_en_echec_rend_la_main(qtbot, monkeypatch):
+    """Une exception du provider figeait le bouton sur « Génération… »."""
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+
+    class Broken:
+        def summarize(self, entries, on_token=None):
+            raise RuntimeError("401")
+
+    w = HistoryWindow(summary_provider=Broken())
+    qtbot.addWidget(w)
+    w.history.add("Bonjour.")
+    w.reload_meetings()
+    errors = []
+    w._summary_error.connect(errors.append)
+
+    w._run_summarize()
+
+    assert errors and "401" in errors[0]
+    assert w.summarize_btn.text() == "Résumer"

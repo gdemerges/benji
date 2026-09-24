@@ -59,6 +59,9 @@ class AccountController(QObject):
             try:
                 token = self._session.access_token()
                 if not token:
+                    # Session gardée mais pas de jeton : backend injoignable.
+                    if self._session.is_authenticated:
+                        raise RuntimeError("Service Benji injoignable — réessaie dans un instant.")
                     raise RuntimeError("Session expirée — reconnecte-toi.")
                 fn(token)
             except Exception as e:  # réseau, 401/402, backend down…

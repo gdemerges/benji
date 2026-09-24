@@ -1,8 +1,9 @@
 import hashlib
 import logging
 import os
+import threading
 from collections import deque
-from queue import Full, Queue
+from queue import Empty, Full, Queue
 
 import numpy as np
 import onnxruntime as ort
@@ -129,6 +130,9 @@ class VADProcessor:
 
         # State
         self.is_speaking = False
+        # Posé par le thread Qt à la pause micro, traité sur le thread VAD (seul
+        # propriétaire de l'état ci-dessous) : cf. request_flush().
+        self._flush_requested = threading.Event()
         self.speech_buffer: list[np.ndarray] = []
         # Confiance VAD de chaque morceau de `speech_buffer`, au même indice :
         # c'est là qu'une coupure forcée cherche le moment le plus calme.
@@ -347,10 +351,35 @@ class VADProcessor:
         if self.display_queue:
             self.display_queue.put({"type": "vad_status", "speaking": False})
 
+    def request_flush(self) -> None:
+        """Clôt l'énoncé en cours — appelé à la pause du micro, depuis le thread Qt.
+
+        La pause coupe le flux : plus aucun morceau n'arrive, donc aucun silence
+        ne vient jamais clore la phrase commencée. Elle restait dans le tampon et,
+        à la reprise, la phrase suivante lui était recollée — des minutes plus
+        tard, décodées comme un seul énoncé. Ce qui a été dit avant la pause part
+        en final, comme après un vrai silence.
+        """
+        self._flush_requested.set()
+
+    def _handle_flush_request(self) -> None:
+        if not self._flush_requested.is_set():
+            return
+        self._flush_requested.clear()
+        if self.is_speaking:
+            self._flush_segment(is_final=True)
+
     def run(self):
         log.info("Processing started")
         while True:
-            chunk = self.audio_queue.get()
+            # Attente bornée : une demande de clôture doit être servie même
+            # quand plus aucun audio n'arrive — c'est le propre d'une pause.
+            try:
+                chunk = self.audio_queue.get(timeout=0.2)
+            except Empty:
+                self._handle_flush_request()
+                continue
+            self._handle_flush_request()
             if chunk is None:
                 break
             self.process_chunk(chunk)

@@ -123,3 +123,16 @@ def test_migration_depuis_le_cache_legacy(isolated_home):
 
     assert [e["text"] for e in history.get_recent()] == ["réunion d'avant"]
     assert not (legacy_dir / "history.jsonl").exists()
+
+
+def test_une_entree_versee_garde_son_heure_et_ouvre_la_reunion_a_cette_heure(history):
+    """Ce qui précédait l'accord de conservation est versé plus tard : l'entrée
+    porte l'heure où c'était dit, et la réunion qu'elle ouvre commence alors."""
+    from datetime import datetime
+
+    said_at = datetime(2026, 9, 24, 9, 30)
+    history.add("Premier point.", timestamp=said_at)
+
+    entry = history.get_recent()[0]
+    assert entry["timestamp"] == said_at.isoformat()
+    assert meetings.current_meeting().started_at == said_at

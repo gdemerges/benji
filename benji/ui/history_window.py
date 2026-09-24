@@ -138,12 +138,20 @@ class HistoryWindow(QWidget):
     # (réunion, étiquette, nom) : un locuteur nommé ici doit l'être aussi dans
     # le Live et l'overlay quand c'est la réunion en cours (cf. app.py).
     speaker_named = Signal(str, str, str)
+    # La réunion en cours vient de changer (nouvelle, ou effacée) : l'app doit
+    # redemander l'accord de conservation et oublier les noms de locuteurs,
+    # comme depuis le tray (cf. app._on_new_meeting). Sans ce relais, l'accord
+    # donné pour la réunion précédente valait pour celle qu'on ouvrait ici.
+    current_meeting_changed = Signal()
 
-    def __init__(self, session_start: datetime = None, stats: SessionStats | None = None):
+    def __init__(self, session_start: datetime = None, stats: SessionStats | None = None,
+                 summary_provider=None):
         super().__init__()
         self.history = TranscriptionHistory()
         self.session_start = session_start or datetime.now()
         self.stats = stats
+        # Provider de résumé de l'app (cf. llm/providers.py). None = modèle local.
+        self._summary_provider = summary_provider
         self._entries: list[dict] = []
         # Les entrées de la réunion avant filtrage par la recherche : le
         # compteur « 3 résultats sur 128 » a besoin des deux.
@@ -488,6 +496,7 @@ class HistoryWindow(QWidget):
         meeting = meetings.start_meeting()
         self._meeting_id = meeting.id
         self._speaker_names = {}
+        self.current_meeting_changed.emit()
         self.reload_meetings()
 
     def _meeting_slug(self) -> str:
@@ -674,9 +683,22 @@ class HistoryWindow(QWidget):
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
+        was_current = self._meeting_id == meetings.current_meeting_id()
         self.history.clear(self._meeting_id)
         if self._meeting_id != meetings.LEGACY_ID:
-            meetings.store().delete(self._meeting_id)
+            # Passe par le module (et non le store) : effacer la réunion en cours
+            # doit aussi l'oublier comme réunion courante, sinon la suite de la
+            # transcription s'écrivait sous l'identifiant d'une réunion effacée.
+            meetings.delete_meeting(self._meeting_id)
+        # Ses résumés partent avec elle : « effacer définitivement » ne doit
+        # rien laisser de la réunion sur le disque.
+        from benji.llm.summarizer import delete_summaries
+
+        delete_summaries(self._meeting_id)
+        if was_current:
+            # Effacer ce qu'on est en train de dire, c'est refuser de le garder :
+            # la suite repart d'un accord à redemander.
+            self.current_meeting_changed.emit()
         self._meeting_id = None
         self._speaker_names = {}
         self.reload_meetings()
@@ -689,16 +711,28 @@ class HistoryWindow(QWidget):
         threading.Thread(target=self._run_summarize, daemon=True).start()
 
     def _run_summarize(self):
-        from benji.llm.summarizer import save_summary, summarize
+        from benji.llm.providers import LocalSummaryProvider
+        from benji.llm.summarizer import save_summary
         entries = list(self._entries)
         if not entries:
             self._summary_error.emit("Aucune transcription dans cette réunion.")
             return
-        summary = summarize(entries)
-        if not summary:
-            self._summary_error.emit("Impossible de générer un résumé.")
+        # Le provider choisi par l'utilisateur (local, cloud Benji…) et non le
+        # modèle local d'office : sur Windows, ou après avoir choisi le cloud
+        # au premier lancement, il n'y a pas de modèle local à appeler.
+        provider = self._summary_provider or LocalSummaryProvider()
+        try:
+            summary = provider.summarize(entries)
+            if not summary:
+                self._summary_error.emit("Impossible de générer un résumé.")
+                return
+            path = save_summary(summary, entries)
+        except Exception as e:
+            # Sans ce filet, le fil mourait en silence et le bouton restait
+            # figé sur « Génération… » jusqu'au redémarrage.
+            log.warning("Résumé de réunion en échec : %s", e)
+            self._summary_error.emit(f"Impossible de générer un résumé : {e}")
             return
-        path = save_summary(summary)
         self._summary_ready.emit(summary, str(path))
 
     def _on_summary_ready(self, summary: str, path: str):

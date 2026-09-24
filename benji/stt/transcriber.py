@@ -1,8 +1,9 @@
+import contextlib
 import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from queue import Full, Queue
+from queue import Empty, Full, Queue
 
 import numpy as np
 
@@ -494,4 +495,30 @@ class Transcriber:
                 self._reset_partial_state()
         if self._diarizer_pool is not None:
             self._diarizer_pool.shutdown(wait=False)
+        self._stop_corrector()
         log.info("Transcription stopped")
+
+    def _stop_corrector(self) -> None:
+        """Arrête le correcteur sans perdre ce qu'il n'a pas encore traité.
+
+        Avec `llm_correction`, c'est le correcteur qui écrit l'historique. Son
+        fil n'était jamais arrêté : à la fermeture, les segments en attente de
+        correction mouraient avec lui, sans jamais être conservés. On les verse
+        tels quels (le texte brut, déjà affiché), puis on arrête le fil — celui
+        qu'il corrige en ce moment a encore un court délai pour aboutir.
+        """
+        if self._correction_queue is None:
+            return
+        while True:
+            try:
+                item = self._correction_queue.get_nowait()
+            except Empty:
+                break
+            if item is None:
+                continue
+            _seq, text, speaker = item
+            self.consent.add(text, speaker=speaker)
+        with contextlib.suppress(Full):
+            self._correction_queue.put_nowait(None)
+        if self._corrector_thread is not None:
+            self._corrector_thread.join(timeout=2.0)

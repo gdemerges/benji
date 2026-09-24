@@ -90,3 +90,32 @@ def test_factory_builds_remote():
                                          backend_url="http://x", summary_model_alias="sonnet"))
     assert isinstance(p, RemoteSummaryProvider)
     assert p.name == "remote"
+
+
+def test_token_provider_is_called_per_summary():
+    """Un jeton figé au lancement expirait en 15 min : chaque résumé redemande
+    un access token valide à la session."""
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.get("authorization"))
+        return httpx.Response(200, text=_SSE_OK, headers={"content-type": "text/event-stream"})
+
+    tokens = iter(["frais-1", "frais-2"])
+    provider = RemoteSummaryProvider(
+        "http://test", token="perime", transport=_transport(handler),
+        token_provider=lambda: next(tokens),
+    )
+    provider.summarize(LONG)
+    provider.summarize(LONG)
+    assert seen == ["Bearer frais-1", "Bearer frais-2"]
+
+
+def test_factory_passes_token_provider():
+    from benji.config import LLMConfig
+
+    p = build_summary_provider(
+        LLMConfig(summary_provider="remote", backend_url="http://x"),
+        token_provider=lambda: "tok",
+    )
+    assert p._token_provider() == "tok"

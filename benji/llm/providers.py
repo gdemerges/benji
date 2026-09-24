@@ -126,9 +126,14 @@ class RemoteSummaryProvider:
         model_alias: str = "haiku",
         timeout: float = 120.0,
         transport=None,  # httpx transport injectable (tests)
+        token_provider: Callable[[], str | None] | None = None,
     ):
         self._base_url = base_url.rstrip("/")
         self._token = token
+        # Appelé à chaque résumé : l'access token expire en 15 min, et un jeton
+        # figé au lancement faisait échouer (401) tout résumé demandé en fin de
+        # réunion. Le jeton statique ne sert plus que de repli (tests, dev).
+        self._token_provider = token_provider
         self._model_alias = model_alias
         self._timeout = timeout
         self._transport = transport
@@ -144,7 +149,9 @@ class RemoteSummaryProvider:
         import httpx
 
         url = f"{self._base_url}/v1/summary"
-        headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
+        token = self._token_provider() if self._token_provider is not None else None
+        token = token or self._token
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
         payload = {
             "entries": [
                 {
@@ -194,8 +201,12 @@ class RemoteSummaryProvider:
         return "".join(chunks).strip() or None
 
 
-def build_summary_provider(cfg) -> SummaryProvider:
-    """Construit le provider de résumé d'après `LLMConfig`."""
+def build_summary_provider(cfg, token_provider=None) -> SummaryProvider:
+    """Construit le provider de résumé d'après `LLMConfig`.
+
+    `token_provider` rend un access token valide (`Session.access_token`) ; il
+    est rappelé à chaque résumé distant.
+    """
     provider = getattr(cfg, "summary_provider", "local")
     if provider == "cloud":
         return CloudSummaryProvider(
@@ -208,5 +219,6 @@ def build_summary_provider(cfg) -> SummaryProvider:
             base_url=cfg.backend_url,
             token=cfg.backend_token,
             model_alias=cfg.summary_model_alias,
+            token_provider=token_provider,
         )
     return LocalSummaryProvider()

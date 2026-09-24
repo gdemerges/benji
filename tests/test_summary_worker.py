@@ -30,7 +30,7 @@ def fake_summarize():
 
 def test_full_lifecycle(qtbot, tmp_path, fake_summarize):
     saved_files: list[Path] = []
-    def fake_save(text):
+    def fake_save(text, entries=None):
         p = tmp_path / "summary_1.md"
         p.write_text(text)
         saved_files.append(p)

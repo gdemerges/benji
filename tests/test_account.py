@@ -122,3 +122,70 @@ def test_logout_clears_store(tmp_path):
     session.logout()
     assert not session.is_authenticated
     assert store.load() is None
+
+
+def _session_with_expired_access(tmp_path, refresh_handler):
+    """Session connectée dont l'access token est expiré : le prochain
+    `access_token()` passe par le refresh, servi par `refresh_handler`."""
+    expired, refresh_tok = _jwt(int(time.time()) - 10), _jwt(int(time.time()) + 99999)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/auth/login":
+            return httpx.Response(200, json={"access_token": expired,
+                                             "refresh_token": refresh_tok, "expires_in": 900})
+        return refresh_handler(request)
+
+    session = Session(AuthClient("http://test", transport=_transport(handler)),
+                      store=_store(tmp_path))
+    session.login("u@b.c", "pw")
+    return session
+
+
+def test_network_error_keeps_session(tmp_path):
+    """Réveil de veille sans Wi-Fi : le refresh échoue faute de réseau. La
+    session ne doit pas être jetée — elle déconnectait l'utilisateur."""
+    def handler(request):
+        raise httpx.ConnectError("offline")
+
+    session = _session_with_expired_access(tmp_path, handler)
+    assert session.access_token() is None
+    assert session.is_authenticated
+    assert Session(AuthClient("http://test"), store=_store(tmp_path)).is_authenticated
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 429])
+def test_server_error_keeps_session(tmp_path, status):
+    session = _session_with_expired_access(
+        tmp_path, lambda request: httpx.Response(status, json={})
+    )
+    assert session.access_token() is None
+    assert session.is_authenticated
+
+
+def test_concurrent_refresh_presents_refresh_token_once(tmp_path):
+    """Refresh rotatif + détection de réutilisation côté backend : deux threads
+    qui rafraîchissent ensemble ne doivent présenter le jeton qu'une fois."""
+    import threading
+
+    fresh_access = _jwt(int(time.time()) + 900)
+    presented = []
+    gate = threading.Event()
+
+    def handler(request):
+        presented.append(json.loads(request.content)["refresh_token"])
+        gate.wait(0.2)  # élargit la fenêtre de concurrence
+        return httpx.Response(200, json={"access_token": fresh_access,
+                                         "refresh_token": _jwt(int(time.time()) + 99999),
+                                         "expires_in": 900})
+
+    session = _session_with_expired_access(tmp_path, handler)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(session.access_token()))
+               for _ in range(4)]
+    for t in threads:
+        t.start()
+    gate.set()
+    for t in threads:
+        t.join()
+    assert len(presented) == 1
+    assert results == [fresh_access] * 4

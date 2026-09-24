@@ -185,3 +185,22 @@ def test_une_marque_anterieure_au_transcript_naccroche_rien():
     entries = [{"timestamp": "2026-08-31T14:00:00", "text": "Premier point."}]
 
     assert meetings.marked_indices(entries, [datetime(2026, 8, 31, 13, 0)]) == set()
+
+
+def test_effacer_la_reunion_en_cours_l_oublie_comme_courante():
+    """Sinon la suite de la transcription s'écrivait sous l'identifiant d'une
+    réunion effacée : des entrées orphelines, sans titre ni registre."""
+    first = meetings.current_meeting()
+    meetings.delete_meeting(first.id)
+
+    assert meetings.current_meeting_id() is None
+    assert meetings.store().get(first.id) is None
+    assert meetings.current_meeting().id != first.id
+
+
+def test_effacer_une_autre_reunion_garde_la_courante():
+    old = meetings.start_meeting("Ancienne")
+    current = meetings.start_meeting("En cours")
+    meetings.delete_meeting(old.id)
+
+    assert meetings.current_meeting_id() == current.id

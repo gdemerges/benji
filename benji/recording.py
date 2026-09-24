@@ -18,6 +18,8 @@ Module pur : ni Qt, ni disque. Le magasin réel est injecté.
 from __future__ import annotations
 
 import logging
+import threading
+from datetime import datetime
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +40,18 @@ class RecordingConsent:
     def __init__(self, history, armed: bool = False):
         self._history = history
         self._armed = armed
-        self._pending: list[tuple[str, str | None]] = []
+        # (texte, locuteur, instant où c'est dit). L'instant est pris **ici** et
+        # non au versement : sans lui, tout ce qui précédait l'accord partageait
+        # l'heure du clic — la ligne de temps s'effondrait en un point, les
+        # sous-titres SRT duraient zéro seconde et les marques s'accrochaient
+        # de travers.
+        self._pending: list[tuple[str, str | None, datetime]] = []
+        # `add` vient du thread STT (et du correcteur), `arm`/`reset` du thread
+        # Qt. Sans verrou, une phrase ajoutée pendant le versement tombait dans
+        # la liste qu'on venait de vider, portillon ouvert : jamais écrite.
+        # Le versement se fait verrou tenu, pour qu'une phrase dite pendant ce
+        # temps s'écrive *après* celles qui l'ont précédée.
+        self._lock = threading.Lock()
 
     @property
     def armed(self) -> bool:
@@ -49,26 +62,28 @@ class RecordingConsent:
         return len(self._pending)
 
     def add(self, text: str, speaker: str | None = None) -> None:
-        if self._armed:
-            self._history.add(text, speaker=speaker)
-            return
-        self._pending.append((text, speaker))
-        if len(self._pending) > _MAX_PENDING:
-            del self._pending[: len(self._pending) - _MAX_PENDING]
+        with self._lock:
+            if self._armed:
+                self._history.add(text, speaker=speaker)
+                return
+            self._pending.append((text, speaker, datetime.now()))
+            if len(self._pending) > _MAX_PENDING:
+                del self._pending[: len(self._pending) - _MAX_PENDING]
 
     def arm(self) -> int:
         """Accorde la conservation et verse l'attente. Retourne le nombre versé.
 
         Idempotent : réarmer une conservation déjà accordée ne réécrit rien.
         """
-        if self._armed:
-            return 0
-        # Armer **avant** de verser : si une écriture échoue, on ne repart pas
-        # avec un portillon fermé et un historique à moitié rempli.
-        self._armed = True
-        pending, self._pending = self._pending, []
-        for text, speaker in pending:
-            self._history.add(text, speaker=speaker)
+        with self._lock:
+            if self._armed:
+                return 0
+            # Armer **avant** de verser : si une écriture échoue, on ne repart
+            # pas avec un portillon fermé et un historique à moitié rempli.
+            self._armed = True
+            pending, self._pending = self._pending, []
+            for text, speaker, said_at in pending:
+                self._history.add(text, speaker=speaker, timestamp=said_at)
         # Le compte, jamais le contenu : ce log part dans les rapports de bug.
         log.info("Conservation accordée — %d entrée(s) versée(s)", len(pending))
         return len(pending)
@@ -79,5 +94,6 @@ class RecordingConsent:
         Ce qui restait en attente est abandonné — il appartenait à la réunion
         qu'on vient de quitter, et personne n'a demandé à le garder.
         """
-        self._armed = armed
-        self._pending = []
+        with self._lock:
+            self._armed = armed
+            self._pending = []

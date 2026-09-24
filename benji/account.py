@@ -19,6 +19,7 @@ import base64
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -34,7 +35,16 @@ _KEYRING_USER = "credentials"
 
 
 class AuthError(RuntimeError):
-    """Échec d'authentification (identifiants, réseau, backend)."""
+    """Échec d'authentification (identifiants, réseau, backend).
+
+    `status` : code HTTP de la réponse, `None` quand le backend n'a pas été
+    joint. C'est ce qui sépare un refus (session morte) d'une coupure réseau
+    (session intacte, à retenter).
+    """
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def _jwt_exp(token: str) -> int | None:
@@ -164,7 +174,7 @@ class AuthClient:
         except httpx.HTTPError as e:
             raise AuthError(f"Connexion au backend impossible : {e}") from e
         if resp.status_code != 200:
-            raise AuthError(_error_message(resp))
+            raise AuthError(_error_message(resp), status=resp.status_code)
         return resp.json()
 
     def register(self, email: str, password: str) -> dict:
@@ -187,7 +197,7 @@ class AuthClient:
         except httpx.HTTPError as e:
             raise AuthError(f"Connexion au backend impossible : {e}") from e
         if resp.status_code != 200:
-            raise AuthError(_error_message(resp))
+            raise AuthError(_error_message(resp), status=resp.status_code)
         return resp.json()
 
 
@@ -200,45 +210,68 @@ class Session:
         self._client = client
         self._store = store or CredentialStore()
         self._creds = self._store.load()
+        # Un seul rafraîchissement à la fois. Les refresh tokens sont **rotatifs**
+        # côté backend, avec détection de réutilisation : deux threads (STT
+        # distant, facturation, résumé) qui rafraîchissaient en même temps
+        # présentaient le même jeton deux fois — le backend y voit un vol et
+        # révoque toute la famille, l'utilisateur est déconnecté.
+        self._lock = threading.RLock()
 
     @property
     def is_authenticated(self) -> bool:
-        return bool(self._creds and self._creds.get("refresh_token"))
+        creds = self._creds
+        return bool(creds and creds.get("refresh_token"))
 
     @property
     def email(self) -> str | None:
         return (self._creds or {}).get("email")
 
     def login(self, email: str, password: str) -> None:
-        self._persist(email, self._client.login(email, password))
+        tokens = self._client.login(email, password)
+        with self._lock:
+            self._persist(email, tokens)
 
     def register(self, email: str, password: str) -> None:
-        self._persist(email, self._client.register(email, password))
+        tokens = self._client.register(email, password)
+        with self._lock:
+            self._persist(email, tokens)
 
     def logout(self) -> None:
-        self._creds = None
-        self._store.clear()
+        with self._lock:
+            self._creds = None
+            self._store.clear()
 
     def access_token(self) -> str | None:
-        """Access token valide (rafraîchi si expiré/proche), ou None si déconnecté."""
-        if not self._creds:
-            return None
-        access = self._creds.get("access_token")
-        exp = _jwt_exp(access) if access else None
-        if access and exp and exp - time.time() > self._REFRESH_MARGIN_S:
-            return access
-        refresh = self._creds.get("refresh_token")
-        if not refresh:
-            return None
-        try:
-            tokens = self._client.refresh(refresh)
-        except AuthError:
-            # Refresh expiré/invalide → session morte, on nettoie.
-            log.info("Session expirée — reconnexion requise.")
-            self.logout()
-            return None
-        self._persist(self._creds.get("email"), tokens)
-        return self._creds.get("access_token")
+        """Access token valide (rafraîchi si expiré/proche), ou None si déconnecté.
+
+        None ne veut pas toujours dire « déconnecté » : backend injoignable, la
+        session est gardée et l'appelant retentera (cf. ci-dessous).
+        """
+        with self._lock:
+            if not self._creds:
+                return None
+            access = self._creds.get("access_token")
+            exp = _jwt_exp(access) if access else None
+            if access and exp and exp - time.time() > self._REFRESH_MARGIN_S:
+                return access
+            refresh = self._creds.get("refresh_token")
+            if not refresh:
+                return None
+            try:
+                tokens = self._client.refresh(refresh)
+            except AuthError as e:
+                if e.status is None or e.status >= 500 or e.status == 429:
+                    # Réseau coupé (réveil de veille avant le Wi-Fi), backend en
+                    # panne ou limité : la session n'est pas en cause. La jeter
+                    # obligeait à se reconnecter après chaque coupure.
+                    log.warning("Rafraîchissement de session impossible pour l'instant : %s", e)
+                    return None
+                # Refus explicite (expiré, révoqué) → session morte, on nettoie.
+                log.info("Session expirée — reconnexion requise.")
+                self.logout()
+                return None
+            self._persist(self._creds.get("email"), tokens)
+            return self._creds.get("access_token")
 
     def _persist(self, email: str | None, tokens: dict) -> None:
         self._creds = {

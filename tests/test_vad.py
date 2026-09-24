@@ -189,3 +189,37 @@ def test_forced_cut_falls_back_on_energy_when_vad_saturates():
         vad.process_chunk(c)
     [head] = _drain(tx_q)
     assert len(head["audio"]) == 25 * 512  # coupé au milieu du blanc
+
+
+def test_la_pause_du_micro_clot_l_enonce_en_cours(chunks):
+    """La pause coupe le flux : aucun silence ne vient clore la phrase commencée.
+    Sans clôture, la phrase d'après la reprise lui était recollée."""
+    import threading
+
+    vad, tx_q, display_q = _make_vad([0.9] * 10)
+    for c in chunks[:10]:
+        vad.process_chunk(c)
+    assert vad.is_speaking and tx_q.empty()
+
+    runner = threading.Thread(target=vad.run, daemon=True)
+    runner.start()
+    vad.request_flush()  # aucun audio n'arrive : c'est la pause
+
+    msg = tx_q.get(timeout=2)
+    assert msg["is_final"] is True
+    vad.audio_queue.put(None)
+    runner.join(timeout=2)
+    assert not runner.is_alive()
+    assert not vad.is_speaking  # la reprise ouvrira un énoncé neuf
+
+
+def test_une_demande_de_cloture_sans_parole_ne_produit_rien():
+    import threading
+
+    vad, tx_q, _ = _make_vad([])
+    runner = threading.Thread(target=vad.run, daemon=True)
+    runner.start()
+    vad.request_flush()
+    vad.audio_queue.put(None)
+    runner.join(timeout=2)
+    assert tx_q.empty()
