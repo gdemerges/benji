@@ -185,3 +185,19 @@ def test_split_by_speaker_leaves_the_boundary_alone_without_a_real_pause():
 
     assert [w["text"] for w in turns[0][1]] == ["il", "faut", "avancer"]
     assert [w["text"] for w in turns[1][1]] == ["non", "attends"]
+
+
+def test_split_by_speaker_snaps_forward_at_the_end_of_the_segment():
+    """Frontière avancée vers une pause en fin de segment : elle est déjà placée.
+
+    La boucle la retrouvait à sa nouvelle position et cherchait un meilleur blanc
+    dans une fenêtre vide — `max()` levait et le segment final était perdu.
+    """
+    words = _words(("oui", 0.0, 0.3), ("voilà", 0.32, 0.6), ("moi", 1.0, 1.3))
+    spans = [(0.0, 0.31, "A"), (0.31, 1.3, "B")]
+
+    turns = split_by_speaker(words, spans, min_turn_words=1)
+
+    assert [lbl for lbl, _ in turns] == ["A", "B"]
+    assert [w["text"] for w in turns[0][1]] == ["oui", "voilà"]
+    assert [w["text"] for w in turns[1][1]] == ["moi"]

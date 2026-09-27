@@ -338,7 +338,9 @@ def _snap_to_pauses(words: list[dict], assigned: list[str | None],
     out = list(assigned)
     floor = 1  # une frontière ne peut pas repasser derrière la précédente
     for i in range(1, len(out)):
-        if out[i] == out[i - 1]:
+        # Sous `floor`, c'est la frontière qu'on vient d'avancer jusqu'ici : déjà
+        # placée, la reprendre donnerait une fenêtre de recherche vide.
+        if out[i] == out[i - 1] or i < floor:
             continue
         lo, hi = max(floor, i - radius), min(len(out) - 1, i + radius)
         best = max(range(lo, hi + 1), key=gap)
