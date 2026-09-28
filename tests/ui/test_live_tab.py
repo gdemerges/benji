@@ -162,6 +162,8 @@ def _fill_past_the_fold(tab, qtbot, count=30):
     qtbot.waitExposed(tab)
     for i in range(count):
         tab.on_event(_final(f"Ligne {i} " + "mot " * 25, "A", i))
+    # Attend le layout plutôt qu'un délai fixe : sous Windows il arrive après 50 ms.
+    qtbot.waitUntil(lambda: tab.scroll.verticalScrollBar().maximum() > 0, timeout=3000)
     qtbot.wait(50)
 
 

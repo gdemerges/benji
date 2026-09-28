@@ -14,7 +14,6 @@ import benji.stt.backend as backend_mod
 from benji.stt.backend import build_backend, group_tokens_into_words, words_from_result
 
 
-
 @pytest.fixture(autouse=True)
 def _modeles_autorises(monkeypatch):
     """Ces tests exercent le chargement, pas l'accord (cf. test_onboarding)."""

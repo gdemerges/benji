@@ -35,6 +35,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("XDG_CACHE_HOME", str(home / ".cache"))
     monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     # Filet : la suite est hermétique et hors ligne. Un test qui oublie de
     # simuler un moteur construirait un vrai backend et téléchargerait un modèle
     # de plusieurs gigaoctets — vu une fois, la suite « figeait » sans rien dire.

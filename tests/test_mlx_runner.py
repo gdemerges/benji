@@ -19,7 +19,6 @@ import pytest
 from benji.llm import mlx_runner
 
 
-
 @pytest.fixture(autouse=True)
 def _modeles_autorises(monkeypatch):
     """Ces tests exercent le chargement, pas l'accord (cf. test_onboarding)."""

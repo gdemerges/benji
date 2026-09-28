@@ -24,11 +24,13 @@ def fresh_logging(monkeypatch, tmp_path):
 
 def test_log_dir_follows_platform_convention(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
-    expected = (
-        tmp_path / "Library" / "Logs" / "Benji"
-        if sys.platform == "darwin"
-        else tmp_path / ".local" / "state" / "benji"
-    )
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    if sys.platform == "darwin":
+        expected = tmp_path / "Library" / "Logs" / "Benji"
+    elif sys.platform == "win32":
+        expected = tmp_path / "local" / "Benji" / "Logs"
+    else:
+        expected = tmp_path / ".local" / "state" / "benji"
     assert logging_config.log_dir() == expected
     assert logging_config.log_file_path().name == "benji.log"
 

@@ -1,3 +1,5 @@
+import os
+import time
 from pathlib import Path
 
 from benji.ui.summaries_tab import SummariesTab
@@ -27,7 +29,10 @@ def _summary_rows(tab: SummariesTab) -> list[tuple[int, str]]:
 
 def test_loads_existing_summaries(qtbot, tmp_path):
     _write_summary(tmp_path, "summary_20260527_140000.md", "# Titre A\n\nCorps A")
-    _write_summary(tmp_path, "summary_20260527_153000.md", "# Titre B\n\nCorps B")
+    b = _write_summary(tmp_path, "summary_20260527_153000.md", "# Titre B\n\nCorps B")
+    # mtime explicite : deux écritures consécutives peuvent partager le même
+    # horodatage (résolution grossière sous Windows) et l'ordre serait aléatoire.
+    os.utime(b, (time.time() + 60, time.time() + 60))
 
     tab = SummariesTab(summaries_dir=tmp_path)
     qtbot.addWidget(tab)

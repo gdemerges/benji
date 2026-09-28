@@ -270,8 +270,6 @@ class BenjiApplication:
         Le mode remote n'a ni modèle local ni assistant à montrer : la
         transcription se fait côté backend.
         """
-        from benji import onboarding
-
         if not self._onboarding_required():
             return True
         from PySide6.QtWidgets import QDialog
@@ -797,6 +795,18 @@ class BenjiApplication:
             queue.set_listener(drain)
         drain()
 
+    @staticmethod
+    def _put_sentinel(q: Queue) -> None:
+        """Pose le sentinelle d'arrêt sans jamais bloquer le thread Qt.
+
+        Les files sont bornées : un consommateur bloqué les laisse pleines, et un
+        `put` bloquant figerait la fermeture de l'app.
+        """
+        try:
+            q.put(None, timeout=1.0)
+        except Full:
+            log.warning("File pleine à l'arrêt : sentinelle abandonnée")
+
     def shutdown(self) -> None:
         log.info("Shutting down...")
         # Horodate la fin de la réunion en cours (si une transcription a eu lieu)
@@ -824,12 +834,12 @@ class BenjiApplication:
         if self.system_capture is not None:
             self.system_capture.stop()
         if self.audio_queue is not None:
-            self.audio_queue.put(None)
+            self._put_sentinel(self.audio_queue)
         self.stt_stopping.set()
         if self.remote_stt is not None:
             self.remote_stt.stop()
         if not self.remote_mode and self.transcribe_queue is not None:
-            self.transcribe_queue.put(None)
+            self._put_sentinel(self.transcribe_queue)
         if self.vad_thread is not None:
             self.vad_thread.join(timeout=2)
         if self.stt_supervisor is not None:

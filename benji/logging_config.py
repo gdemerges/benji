@@ -50,9 +50,12 @@ _BACKUP_COUNT = 3
 
 
 def log_dir() -> Path:
-    """Dossier des logs. `~/Library/Logs/Benji` sur macOS, sinon repli XDG."""
+    """Dossier des logs : `~/Library/Logs/Benji` (macOS), `%LOCALAPPDATA%` (Windows), sinon XDG."""
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Logs" / "Benji"
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA")
+        return (Path(base) if base else Path.home() / "AppData" / "Local") / "Benji" / "Logs"
     base = os.environ.get("XDG_STATE_HOME")
     return (Path(base) if base else Path.home() / ".local" / "state") / "benji"
 
